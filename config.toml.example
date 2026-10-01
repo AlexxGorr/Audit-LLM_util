@@ -1,0 +1,13 @@
+# Example config for audit-llm
+# Copy to config.toml and adjust paths:
+#   cp config.toml.example config.toml
+
+[paths]
+# Where your LLM models are stored
+models_dir = "/path/to/models"
+
+# Where to store audit data: etalon, state, logs
+data_dir = "/path/to/audit-data"
+
+# Where to move suspicious files
+quarantine_dir = "/path/to/quarantine"

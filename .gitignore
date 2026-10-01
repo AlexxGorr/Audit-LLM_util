@@ -25,3 +25,4 @@ tmp/
 models/
 *.egg-info/
 config.toml
+config.toml
