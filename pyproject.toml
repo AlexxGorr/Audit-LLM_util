@@ -1,0 +1,19 @@
+[project]
+name = "audit-llm"
+version = "0.1.0"
+description = "Аудит локальных LLM: проверка целостности файлов моделей"
+requires-python = ">=3.11"
+dependencies = [
+    "typer[all]>=0.12.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+auditllm = "auditllm.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["auditllm*"]
