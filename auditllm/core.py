@@ -4,6 +4,7 @@
 """
 import logging
 from pathlib import Path
+from datetime import datetime
 
 from auditllm.checks.hash_check import HashCheck
 
@@ -327,15 +328,6 @@ def cmd_audit(
 
 
 def cmd_list(config: Config, logger: logging.Logger, as_json: bool = False) -> int:
-    # 1. Проверка папки
-    if not config.models_dir.is_dir():
-        ...
-        return 1
-
-    # 2. Поиск файлов
-    files = find_model_files(config.models_dir)
-
-    # 3. Загрузка state (вместо эталона)
     state = load_state(config.state_path)
     if not state:
         logger.warning("state_not_found_for_list", extra={"extra_data": {
@@ -345,26 +337,109 @@ def cmd_list(config: Config, logger: logging.Logger, as_json: bool = False) -> i
 
     # 4. Сбор данных
     models = []
+    for path, entry in state.items():
+        file_path = config.models_dir / path
+        present = file_path.is_file()
+        # Определяем статусы checks
+        if present:
+            actual_size = file_path.stat().st_size
+            if entry.get("size") != actual_size:
+                # файл изменился → все проверки stale
+                checks_status = {name: "stale" for name in entry.get("checks", {})}
+            else:
+                checks_status = {
+                    name: res.get("status", "unknown")
+                    for name, res in entry.get("checks", {}).items()
+                }
+        else:
+            # файла нет — последние известные статусы
+            checks_status = {
+                name: res.get("status", "unknown")
+                for name, res in entry.get("checks", {}).items()
+            }
+        models.append({
+            "name": Path(path).name,
+            "path": path,
+            "size": entry.get('size'),
+            "size_human": format_size(entry["size"]) if entry.get("size") else "?",
+            "present": present,
+            "last_audit": entry.get('last_audit'),
+            "checks": checks_status,
+        })
+
+    models.sort(key=lambda x: x["path"])
+    present_count = sum(1 for m in models if m["present"])
+    summary = {
+        "total": len(models),
+        "present": present_count,
+        "absent": len(models) - present_count,
+    }
+
+    # 5. Вывод
+    if as_json:
+        _print_list_json(config.models_dir, models, summary)
+    else:
+        _print_list_table(config.models_dir, models, summary)
+
+    return 0
+
+
+def cmd_inbox(
+    config: Config,
+    logger: logging.Logger,
+    as_json: bool = False,
+    new_only: bool = False,
+) -> int:
+    """Показывает файлы в папке моделей (транзитная папка inbox)."""
+    if not config.models_dir.is_dir():
+        logger.error("models_dir_not_found", extra={"extra_data": {
+            "path": str(config.models_dir)
+        }})
+        return 1
+
+    files = find_model_files(config.models_dir)
+    state = load_state(config.state_path)
+
+    models = []
     for file_path in files:
         relative = file_path.relative_to(config.models_dir)
-        size = file_path.stat().st_size
+        st = file_path.stat()
         state_entry = state.get(str(relative))
-        checks_status = compute_checks_status(state_entry, size)
+
+        # Статус в реестре
+        if state_entry is None:
+            registry_status = "new"
+        elif state_entry.get("size") != st.st_size:
+            registry_status = "modified"
+        else:
+            registry_status = "verified"
+
+        if new_only and registry_status != "new":
+            continue
+
         models.append({
             "name": file_path.name,
             "path": str(relative),
-            "size": size,
-            "size_human": format_size(size),
-            "checks": checks_status,  # {check_name: status}
+            "size": st.st_size,
+            "size_human": format_size(st.st_size),
+            "registry_status": registry_status,
         })
 
     models.sort(key=lambda x: x["path"])
 
-    # 5. Вывод
+    summary = {
+        "total": len(models),
+        "verified": sum(1 for m in models if m["registry_status"] == "verified"),
+        "new": sum(1 for m in models if m["registry_status"] == "new"),
+        "modified": sum(1 for m in models if m["registry_status"] == "modified"),
+        "total_size": sum(m["size"] for m in models),
+        "total_size_human": format_size(sum(m["size"] for m in models)),
+    }
+
     if as_json:
-        _print_list_json(config.models_dir, models)
+        _print_inbox_json(config.models_dir, models, summary)
     else:
-        _print_list_table(config.models_dir, models)
+        _print_inbox_table(config.models_dir, models, summary)
 
     return 0
 
@@ -401,16 +476,29 @@ STATUS_LABELS = {
 }
 
 
-def _print_list_table(models_dir, models):
+REGISTRY_LABELS = {
+    "verified": "[green][OK][/green]",
+    "modified": "[yellow][!][/yellow]",
+    "new":      "[dim][ ][/dim]",
+}
+
+
+PRESENCE_LABELS = {
+    True:  "[green][+][/green]",
+    False: "[dim][-][/dim]",
+}
+
+
+def _print_list_table(models_dir, models, summary):
     console = Console()
-    console.print(f"\n📁 Папка с моделями: {models_dir}\n")
-    console.print(f"Найдено моделей: {len(models)}\n")
+    console.print(f"\n📁 Реестр проверенных моделей\n")
+    console.print(f"Всего записей: {summary['total']}\n")
 
     if not models:
-        console.print("[yellow]Моделей не найдено[/yellow]")
+        console.print("[yellow]Реестр пуст. Запусти init или audit.[/yellow]")
         return
 
-    # Собираем все check_names из всех моделей
+    # Собираем все check_names
     all_checks = set()
     for m in models:
         all_checks.update(m["checks"].keys())
@@ -420,28 +508,102 @@ def _print_list_table(models_dir, models):
     table.add_column("#", style="dim", width=3)
     table.add_column("Имя")
     table.add_column("Размер", justify="right")
+    table.add_column("Наличие", justify="center")
     for name in check_names:
         table.add_column(name, justify="center")
+    table.add_column("Последняя проверка", justify="right")
 
     for i, m in enumerate(models, 1):
-        row = [str(i), m["name"], m["size_human"]]
+        row = [
+            str(i),
+            m["name"],
+            m["size_human"],
+            PRESENCE_LABELS[m["present"]],
+        ]
         for name in check_names:
             status = m["checks"].get(name, "unknown")
             row.append(STATUS_LABELS.get(status, status))
+        row.append(_format_last_audit(m.get("last_audit")))
         table.add_row(*row)
 
     console.print(table)
 
+    # Сводка
+    console.print(
+        f"\nИтого: {summary['total']} записей, "
+        f"{summary['present']} на диске, {summary['absent']} отсутствуют"
+    )
 
 
-def _print_list_json(models_dir, models):
+
+def _print_list_json(models_dir, models, summary):
     output = {
         "models_dir": str(models_dir),
-        "count": len(models),
+        "summary": summary,
         "models": models,
-        # models содержит "checks": {name: status}
     }
     print(json.dumps(output, indent=2, ensure_ascii=False))
+
+
+def _print_inbox_table(models_dir, models, summary):
+    console = Console()
+    console.print(f"\n📁 Inbox: {models_dir}\n")
+    console.print(
+        f"Найдено: {summary['total']} "
+        f"({'файл' if summary['total'] == 1 else 'файлов'}), "
+        f"{summary['total_size_human']}\n"
+    )
+
+    if not models:
+        console.print("[yellow]Файлов не найдено[/yellow]")
+        return
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Имя")
+    table.add_column("Размер", justify="right")
+    table.add_column("Реестр", justify="center")
+
+    for i, m in enumerate(models, 1):
+        table.add_row(
+            str(i),
+            m["name"],
+            m["size_human"],
+            REGISTRY_LABELS[m["registry_status"]],
+        )
+
+    console.print(table)
+
+    # Сводка
+    parts = []
+    if summary["verified"]:
+        parts.append(f"{summary['verified']} проверен" + ("о" if summary['verified'] > 1 else ""))
+    if summary["new"]:
+        parts.append(f"{summary['new']} новый" + ("х" if summary['new'] > 1 else ""))
+    if summary["modified"]:
+        parts.append(f"{summary['modified']} изменён" + ("о" if summary['modified'] > 1 else ""))
+    if parts:
+        console.print(f"\nИтого: {', '.join(parts)}")
+
+
+def _print_inbox_json(models_dir, models, summary):
+    output = {
+        "models_dir": str(models_dir),
+        "summary": summary,
+        "models": models,
+    }
+    print(json.dumps(output, indent=2, ensure_ascii=False))
+
+
+def _format_last_audit(iso_str: str | None) -> str:
+    if not iso_str:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(iso_str)
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return str(iso_str)
+
 
 
 def run_checks(

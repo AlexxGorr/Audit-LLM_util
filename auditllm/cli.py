@@ -6,9 +6,9 @@ import typer
 from pathlib import Path
 
 from auditllm.config import load_secret_key, load_config, Config
-from auditllm.core import cmd_audit, cmd_init, cmd_list
 from auditllm.logging_setup import setup_logger, suppress_console_logging
 from auditllm.progress import ProgressReporter
+from auditllm.core import cmd_audit, cmd_init, cmd_list, cmd_inbox
 
 app = typer.Typer(
     name="auditllm",
@@ -154,11 +154,11 @@ def list_models(
         as_json: bool = typer.Option(False, "--json", help="Вывод в JSON (для CI/CD)"),
         verbose: bool = typer.Option(False, "-v", "--verbose", help="Подробный вывод"),
 ):
-    """Показать список моделей и их статусы из последнего аудита.
+    """Показать реестр проверенных моделей.
 
-        Статусы берутся из models_state.json. Если файл изменился
-        с момента последнего аудита — статус будет [~] (stale).
-        Для обновления статусов — запусти audit.
+        Источник — models_state.json. Показывает все модели, которые когда-либо
+        проходили проверку, включая отсутствующие на диске сейчас.
+        Для просмотра того, что лежит в папке сейчас — команда inbox.
     """
     config, logger, _ = _prepare(config_path, models_dir, data_dir, quarantine_dir, verbose)
     raise typer.Exit(cmd_list(config, logger, as_json=as_json))
@@ -178,6 +178,25 @@ def shell():
     """Интерактивная оболочка (REPL)."""
     typer.echo("🚧 Команда 'shell' ещё не реализована")
     raise typer.Exit(0)
+
+
+@app.command("inbox")
+def inbox(
+    config_path: Path | None = typer.Option(None, "--config", help="Путь к config.toml"),
+    models_dir: Path | None = typer.Option(None, "--models-dir", help="Переопределить папку моделей"),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Переопределить папку данных"),
+    quarantine_dir: Path | None = typer.Option(None, "--quarantine-dir", help="Переопределить карантин"),
+    new_only: bool = typer.Option(False, "--new-only", help="Только непроверенные (новые)"),
+    as_json: bool = typer.Option(False, "--json", help="Вывод в JSON (для CI/CD)"),
+    verbose: bool = typer.Option(False, "-v", "--verbose", help="Подробный вывод"),
+):
+    """Показать файлы в папке моделей (транзитная папка inbox).
+
+    Источник — файловая система. Показывает, что лежит в папке сейчас,
+    и связывает с реестром (models_state.json).
+    """
+    config, logger, _ = _prepare(config_path, models_dir, data_dir, quarantine_dir, verbose)
+    raise typer.Exit(cmd_inbox(config, logger, as_json=as_json, new_only=new_only))
 
 
 # if __name__ == "__main__":
