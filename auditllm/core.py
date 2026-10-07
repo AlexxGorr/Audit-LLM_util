@@ -444,6 +444,132 @@ def cmd_inbox(
     return 0
 
 
+def cmd_inspect(
+        config: Config,
+        logger: logging.Logger,
+        paths: list[Path] | None = None,
+        all_files: bool = False,
+        check_names: list[str] | None = None,
+        as_json: bool = False,
+) -> int:
+    """Просмотр файлов без сохранения. Возвращает код выхода."""
+    # 1. Определить список файлов
+    if all_files:
+        if not config.models_dir.is_dir():
+            logger.error("models_dir_not_found", extra={'extra_data': {'path': paths}})
+            return 1
+        files = find_model_files(config.models_dir)
+    elif paths:
+        files = [Path(p) for p in paths]
+        # проверить, что все существуют
+        for f in files:
+            if not f.is_file():
+                logger.error("file_not_found", extra={"extra_data": {"path": str(f)}})
+                return 1
+    else:
+        logger.error("no_files_specified", extra={'extra_data': {'path': paths}})
+        return 1
+
+    if not files:
+        logger.warning("no_files_found", extra={'extra_data': {'path': paths}})
+        return 0
+
+    # 2. Получить проверки
+    try:
+        checks = get_checks(check_names)
+    except ValueError as e:
+        logger.error("invalid_check", extra={'extra_data': {'check': str(e)}})
+        return 1
+
+    # 3. Запустить проверки для каждого файла (context=None!)
+    results = []
+    for file_path in files:
+        file_res = {"path": str(file_path), "name": file_path.name}
+        try:
+            st = file_path.stat()
+            file_res["size"] = st.st_size
+            file_res["size_human"] = format_size(st.st_size)
+        except OSError:
+            file_res["size"] = None
+            file_res["size_human"] = "?"
+
+        file_res["checks"] = {}
+        for check in checks:
+            if not check.supports(file_path):
+                file_res["checks"][check.name] = CheckResult(
+                    status="skip",
+                    message=f"Not supported for {file_path.suffix}",
+                )
+                continue
+            try:
+                res = check.run(file_path, context=None)  # ← context=None!
+            except Exception as e:
+                res = CheckResult(status="fail", message=f"Check crashed: {e}")
+            file_res["checks"][check.name] = res
+
+        results.append(file_res)
+
+    # 4. Вывод
+    if as_json:
+        _print_inspect_json(results)
+    else:
+        _print_inspect_table(results)
+
+    return 0
+
+
+def _print_inspect_table(results: list):
+    for i, file_res in enumerate(results):
+        if i > 0:
+            print()
+        print(f"📄 {file_res['name']} ({file_res['size_human']})")
+        print(f"   {file_res['path']}")
+        print()
+        for check_name, check_res in file_res["checks"].items():
+            print(f"🔒 {check_name}: [{_status_short(check_res.status)}] — {check_res.message}")
+            if check_res.details:
+                for k, v in check_res.details.items():
+                    # пропускаем "error", если он уже в message
+                    if k == "error" and str(v) in check_res.message:
+                        continue
+                    print(f"     {k}: {v}")
+            print()
+
+
+def _status_short(status: str) -> str:
+    return {
+        "pass": "OK",
+        "fail": "!",
+        "warn": "?",
+        "skip": "--",
+    }.get(status, "?")
+
+
+def _print_inspect_json(results: list):
+    output = {
+        "count": len(results),
+        "files": [
+            {
+                "path": fr["path"],
+                "name": fr["name"],
+                "size": fr["size"],
+                "size_human": fr["size_human"],
+                "checks": {
+                    name: {
+                        "status": res.status,
+                        "message": res.message,
+                        "details": res.details,
+                        "duration_ms": res.duration_ms,
+                    }
+                    for name, res in fr["checks"].items()
+                },
+            }
+            for fr in results
+        ],
+    }
+    print(json.dumps(output, indent=2, ensure_ascii=False))
+
+
 def compute_checks_status(state_entry: dict | None, file_size: int) -> dict:
     """Возвращает {check_name: status} для одного файла.
 

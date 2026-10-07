@@ -8,7 +8,7 @@ from pathlib import Path
 from auditllm.config import load_secret_key, load_config, Config
 from auditllm.logging_setup import setup_logger, suppress_console_logging
 from auditllm.progress import ProgressReporter
-from auditllm.core import cmd_audit, cmd_init, cmd_list, cmd_inbox
+from auditllm.core import cmd_audit, cmd_init, cmd_list, cmd_inbox, cmd_inspect
 
 app = typer.Typer(
     name="auditllm",
@@ -197,6 +197,48 @@ def inbox(
     """
     config, logger, _ = _prepare(config_path, models_dir, data_dir, quarantine_dir, verbose)
     raise typer.Exit(cmd_inbox(config, logger, as_json=as_json, new_only=new_only))
+
+
+@app.command()
+def inspect(
+        paths: list[Path] = typer.Argument(
+            None,
+            help="Файлы для просмотра (можно несколько)",
+        ),
+        all_files: bool = typer.Option(
+            False, "--all",
+            help="Показать все файлы в папке моделей",
+        ),
+        show: list[str] | None = typer.Option(
+            None, "--show",
+            help="Показать только указанные проверки "
+                 "(можно несколько: --show header --show hash)",
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Вывод в JSON (для CI/CD)"),
+        config_path: Path | None = typer.Option(None, "--config", help="Путь к config.toml"),
+        models_dir: Path | None = typer.Option(None, "--models-dir", help="Переопределить папку моделей"),
+        data_dir: Path | None = typer.Option(None, "--data-dir", help="Переопределить папку данных"),
+        quarantine_dir: Path | None = typer.Option(None, "--quarantine-dir", help="Переопределить карантин"),
+        verbose: bool = typer.Option(False, "-v", "--verbose", help="Подробный вывод"),
+):
+    """Показать содержимое файлов (без сохранения в реестр).
+
+    Запускает проверки для указанных файлов и показывает результат.
+    Не изменяет models_state.json, не перемещает в карантин.
+    """
+    # Проверка: хотя бы что-то указано
+    if not paths and not all_files:
+        typer.echo("🚨 Укажи файлы или --all", err=True)
+        raise typer.Exit(1)
+
+    config, logger, _ = _prepare(config_path, models_dir, data_dir, quarantine_dir, verbose)
+    raise typer.Exit(cmd_inspect(
+        config, logger,
+        paths=paths,
+        all_files=all_files,
+        check_names=show,
+        as_json=as_json,
+    ))
 
 
 # if __name__ == "__main__":
