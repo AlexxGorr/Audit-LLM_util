@@ -43,6 +43,18 @@ class HeaderCheck(Check):
                 duration_ms=int((time.monotonic() - start) * 1000),
             )
 
+        # Проверка sanity: если что-то не так — warn, не pass
+        sanity = details.get("sanity", {})
+        failed_sanity = [k for k, v in sanity.items() if not v]
+
+        if failed_sanity:
+            return CheckResult(
+                status="warn",
+                message=f"Header valid but sanity checks failed: {', '.join(failed_sanity)}",
+                details=details,
+                duration_ms=int((time.monotonic() - start) * 1000),
+            )
+
         return CheckResult(
             status="pass",
             message=f"Valid {suffix} header",
@@ -64,11 +76,23 @@ class HeaderCheck(Check):
 
         version, tensor_count, metadata_kv_count = struct.unpack("<IQQ", header[4:24])
 
+        # Sanity checks
+        KNOWN_VERSIONS = {1, 2, 3}
+        version_known = version in KNOWN_VERSIONS
+        tensor_count_ok = 1 <= tensor_count <= 100_000
+        metadata_kv_ok = 0 <= metadata_kv_count <= 100_000
+
         return {
             "format": "GGUF",
             "version": version,
+            "version_str": f"GGUF v{version}",
             "tensor_count": tensor_count,
             "metadata_kv_count": metadata_kv_count,
+            "sanity": {
+                "version_known": version_known,
+                "tensor_count_ok": tensor_count_ok,
+                "metadata_kv_ok": metadata_kv_ok,
+            },
         }
 
     def _check_safetensors(self, file_path: Path) -> dict:
@@ -80,7 +104,7 @@ class HeaderCheck(Check):
 
             header_size = struct.unpack("<Q", header_size_bytes)[0]
 
-            if header_size > 100 * 1024 * 1024:  # 100 МБ — sanity check
+            if header_size > 100 * 1024 * 1024:
                 raise ValueError(f"Header too large: {header_size} bytes")
 
             json_bytes = f.read(header_size)
@@ -92,13 +116,28 @@ class HeaderCheck(Check):
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON header: {e}")
 
+        # Метаданные и тензоры
+        metadata = header_data.get("__metadata__", {})
         tensor_names = [k for k in header_data.keys() if k != "__metadata__"]
+
+        # Распределение по dtype
+        dtype_distribution: dict[str, int] = {}
+        for name in tensor_names:
+            entry = header_data.get(name, {})
+            if isinstance(entry, dict):
+                dtype = entry.get("dtype", "unknown")
+                dtype_distribution[dtype] = dtype_distribution.get(dtype, 0) + 1
+
+        # Первые 5 тензоров (для контекста)
+        sample_tensors = sorted(tensor_names)[:5]
 
         return {
             "format": "safetensors",
             "header_size": header_size,
             "tensor_count": len(tensor_names),
-            "metadata": header_data.get("__metadata__", {}),
+            "metadata": metadata,
+            "dtype_distribution": dtype_distribution,
+            "sample_tensors": sample_tensors,
         }
 
 

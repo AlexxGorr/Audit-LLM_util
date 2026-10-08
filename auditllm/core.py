@@ -535,9 +535,9 @@ def _print_inspect_table(results: list):
 def _print_details(details: dict):
     """Рекурсивно печатает details."""
     for k, v in details.items():
-        # Пропускаем error, если он в message (не здесь, но на будущее)
         if k == "error":
             continue  # error уже в message
+
         if k == "dangerous" and isinstance(v, list):
             if not v:
                 continue
@@ -552,6 +552,7 @@ def _print_details(details: dict):
                     print(f"       - {prefix}{module} ({category}) at pos {pos}")
                 else:
                     print(f"       - {d}")
+
         elif k == "warnings" and isinstance(v, list):
             if not v:
                 continue
@@ -564,10 +565,23 @@ def _print_details(details: dict):
                     print(f"       - {prefix}{msg}")
                 else:
                     print(f"       - {w}")
+
         elif isinstance(v, dict):
+            if not v:
+                continue
             print(f"     {k}:")
             for kk, vv in v.items():
                 print(f"       {kk}: {vv}")
+
+        elif isinstance(v, list):
+            if not v:
+                continue
+            print(f"     {k}:")
+            for item in v[:10]:
+                print(f"       - {item}")
+            if len(v) > 10:
+                print(f"       ... ({len(v) - 10} more)")
+
         else:
             print(f"     {k}: {v}")
 
