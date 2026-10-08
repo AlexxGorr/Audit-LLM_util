@@ -20,11 +20,24 @@ class PickleCheck(Check):
     SUPPORTED = {".pkl", ".pickle", ".pt", ".pth", ".bin", ".ckpt", ".joblib", ".dill"}
 
     # Опасные модули (blocklist — НЕ полный!)
-    DANGEROUS_MODULES = {
-        "os", "subprocess", "sys", "builtins", "__builtin__",
-        "posix", "nt", "shutil", "socket", "pty",
-        "runpy", "importlib", "code", "codeop",
-        "commands", "popen2", "platform",
+    DANGEROUS_CATEGORIES = {
+        "os": "system calls",
+        "posix": "system calls",
+        "nt": "system calls",
+        "subprocess": "process spawn",
+        "sys": "interpreter internals",
+        "builtins": "arbitrary eval/exec",
+        "__builtin__": "arbitrary eval/exec",
+        "shutil": "file manipulation",
+        "socket": "network access",
+        "pty": "terminal control",
+        "runpy": "code execution",
+        "importlib": "dynamic import",
+        "code": "interactive interpreter",
+        "codeop": "code compilation",
+        "commands": "shell commands",
+        "popen2": "process spawn",
+        "platform": "system info",
     }
 
     # Pickle magic byte (protocol 2+)
@@ -65,7 +78,12 @@ class PickleCheck(Check):
             return CheckResult(
                 status="fail",
                 message=f"Pickle safety issues: {len(dangerous)} dangerous, {len(warnings)} warnings",
-                details={"dangerous": dangerous, "warnings": warnings},
+                details={
+                    "dangerous": dangerous,
+                    "warnings": warnings,
+                    "reduce_count": findings.get("reduce_count", 0),
+                    "inner_files": findings.get("inner_files", []),
+                },
                 duration_ms=duration_ms,
             )
 
@@ -102,12 +120,9 @@ class PickleCheck(Check):
             return self._scan_pickle_stream(f)
 
     def _scan_pickle_stream(self, f) -> dict:
-        result = {"dangerous": [], "warnings": []}
+        result = {"dangerous": [], "warnings": [], "reduce_count": 0}
 
-        # Мини-стек для строковых значений (для STACK_GLOBAL)
         string_stack: list[str] = []
-
-        # Опкоды, которые кладут строку на стек
         STRING_OPCODES = {
             "SHORT_BINUNICODE", "BINUNICODE", "UNICODE",
             "BINUNICODE8", "SHORT_BINSTRING", "BINSTRING", "STRING",
@@ -120,58 +135,84 @@ class PickleCheck(Check):
                 if name in STRING_OPCODES and isinstance(arg, str):
                     string_stack.append(arg)
                     if len(string_stack) > 10:
-                        string_stack.pop(0)  # ограничиваем размер
+                        string_stack.pop(0)
 
                 elif name == "GLOBAL":
-                    # Старый формат: arg = "module.name"
                     if arg:
                         module = arg.split(".")[0]
-                        if module in self.DANGEROUS_MODULES:
-                            result["dangerous"].append(arg)
+                        if module in self.DANGEROUS_CATEGORIES:
+                            result["dangerous"].append({
+                                "module": arg,
+                                "category": self.DANGEROUS_CATEGORIES[module],
+                                "pos": pos,
+                            })
 
                 elif name == "STACK_GLOBAL":
-                    # Новый формат (protocol 4+): module и name — на стеке
                     if len(string_stack) >= 2:
                         module = string_stack[-2]
                         attr = string_stack[-1]
                         full = f"{module}.{attr}"
-                        if module in self.DANGEROUS_MODULES:
-                            result["dangerous"].append(full)
+                        if module in self.DANGEROUS_CATEGORIES:
+                            result["dangerous"].append({
+                                "module": full,
+                                "category": self.DANGEROUS_CATEGORIES[module],
+                                "pos": pos,
+                            })
                         else:
-                            # не опасный, но полезно знать, что импортируется
-                            result["warnings"].append(f"imports {full} (pos {pos})")
-                        string_stack = string_stack[:-2]  # снимаем со стека
+                            result["warnings"].append({
+                                "type": "import",
+                                "message": f"imports {full}",
+                                "pos": pos,
+                            })
+                        string_stack = string_stack[:-2]
                     else:
-                        result["warnings"].append(
-                            f"STACK_GLOBAL at pos {pos} — cannot resolve (empty string stack)"
-                        )
+                        result["warnings"].append({
+                            "type": "dynamic_import",
+                            "message": "STACK_GLOBAL without resolvable stack",
+                            "pos": pos,
+                        })
+
+                elif name == "REDUCE":
+                    result["reduce_count"] += 1
 
                 elif name in ("POP", "POP_MARK"):
-                    # грубо: очищаем наш стек
                     string_stack = string_stack[:-1] if string_stack else []
 
         except Exception as e:
-            result["warnings"].append(f"pickle parse error: {e}")
+            result["warnings"].append({
+                "type": "parse_error",
+                "message": str(e),
+                "pos": -1,
+            })
 
         return result
 
     def _scan_zip(self, file_path: Path) -> dict:
-        result = {"dangerous": [], "warnings": []}
+        result = {"dangerous": [], "warnings": [], "reduce_count": 0, "inner_files": []}
 
         with zipfile.ZipFile(file_path, "r") as zf:
             pkl_names = [n for n in zf.namelist() if n.endswith(".pkl")]
+            result["inner_files"] = zf.namelist()[:10]  # первые 10
 
             if not pkl_names:
-                result["warnings"].append(
-                    f"ZIP container, no .pkl found (names: {zf.namelist()[:5]})"
-                )
+                result["warnings"].append({
+                    "type": "no_pickle",
+                    "message": f"ZIP container, no .pkl found",
+                    "pos": -1,
+                })
                 return result
 
             for name in pkl_names:
                 with zf.open(name) as pkl_file:
                     sub = self._scan_pickle_stream(pkl_file)
-                    result["dangerous"].extend(f"{name}: {f}" for f in sub["dangerous"])
-                    result["warnings"].extend(f"{name}: {f}" for f in sub["warnings"])
+                    # добавляем префикс с именем файла
+                    for d in sub["dangerous"]:
+                        d["inner_file"] = name
+                        result["dangerous"].append(d)
+                    for w in sub["warnings"]:
+                        w["inner_file"] = name
+                        result["warnings"].append(w)
+                    result["reduce_count"] += sub["reduce_count"]
 
         return result
 

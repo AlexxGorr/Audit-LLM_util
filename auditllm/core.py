@@ -528,12 +528,48 @@ def _print_inspect_table(results: list):
         for check_name, check_res in file_res["checks"].items():
             print(f"🔒 {check_name}: [{_status_short(check_res.status)}] — {check_res.message}")
             if check_res.details:
-                for k, v in check_res.details.items():
-                    # пропускаем "error", если он уже в message
-                    if k == "error" and str(v) in check_res.message:
-                        continue
-                    print(f"     {k}: {v}")
+                _print_details(check_res.details)
             print()
+
+
+def _print_details(details: dict):
+    """Рекурсивно печатает details."""
+    for k, v in details.items():
+        # Пропускаем error, если он в message (не здесь, но на будущее)
+        if k == "error":
+            continue  # error уже в message
+        if k == "dangerous" and isinstance(v, list):
+            if not v:
+                continue
+            print(f"     dangerous:")
+            for d in v:
+                if isinstance(d, dict):
+                    module = d.get("module", "?")
+                    category = d.get("category", "?")
+                    pos = d.get("pos", "?")
+                    inner = d.get("inner_file")
+                    prefix = f"{inner}: " if inner else ""
+                    print(f"       - {prefix}{module} ({category}) at pos {pos}")
+                else:
+                    print(f"       - {d}")
+        elif k == "warnings" and isinstance(v, list):
+            if not v:
+                continue
+            print(f"     warnings:")
+            for w in v:
+                if isinstance(w, dict):
+                    msg = w.get("message", "?")
+                    inner = w.get("inner_file")
+                    prefix = f"{inner}: " if inner else ""
+                    print(f"       - {prefix}{msg}")
+                else:
+                    print(f"       - {w}")
+        elif isinstance(v, dict):
+            print(f"     {k}:")
+            for kk, vv in v.items():
+                print(f"       {kk}: {vv}")
+        else:
+            print(f"     {k}: {v}")
 
 
 def _status_short(status: str) -> str:
