@@ -1,46 +1,57 @@
+"""Поиск файлов моделей в директории."""
 from pathlib import Path
 
+from auditllm.checks import all_supported_extensions
 
-MODEL_EXTENSIONS = {".bin", ".gguf", ".safetensors", ".pt", ".pth"}
 
-def find_model_files(directory: Path) -> list[Path]:
+def find_model_files(
+    directory: Path,
+    exclude_dirs: list[Path] | None = None,
+) -> list[Path]:
+    """Рекурсивно находит все файлы моделей в директории.
+
+    Args:
+        directory: корневая папка для поиска
+        exclude_dirs: папки, которые нужно исключить (например, quarantine)
+
+    Returns:
+        Отсортированный список путей к файлам моделей.
     """
-    Рекурсивно находит все файлы моделей в директории.
-    """
-    models_lst = sorted([f for f in directory.rglob('*') if f.is_file() and
-                  f.suffix.lower() in MODEL_EXTENSIONS])
+    if not directory.is_dir():
+        return []
 
-    return models_lst
+    extensions = all_supported_extensions()
+    exclude_dirs = exclude_dirs or []
+    exclude_resolved = {d.resolve() for d in exclude_dirs if d.is_dir()}
+
+    results: list[Path] = []
+    for file_path in directory.rglob("*"):
+        if not file_path.is_file():
+            continue
+
+        # Расширение
+        if file_path.suffix.lower() not in extensions:
+            continue
+
+        # Исключённые директории
+        try:
+            file_resolved = file_path.resolve()
+        except OSError:
+            continue
+
+        # Проверяем, не в исключённой ли папке
+        if any(excl in file_resolved.parents for excl in exclude_resolved):
+            continue
+
+        # Fallback: исключаем по имени "quarantine"
+        if "quarantine" in file_path.parts:
+            continue
+
+        results.append(file_path)
+
+    return sorted(results)
 
 
-if __name__ == "__main__":
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-
-        # Создаём структуру
-        (root / "llama-3-8b").mkdir()
-        (root / "mistral-7b").mkdir()
-
-        (root / "llama-3-8b" / "model.safetensors").touch()
-        (root / "llama-3-8b" / "config.json").touch()  # не модель
-        (root / "mistral-7b" / "model.Q4_K_M.gguf").touch()
-        (root / "mistral-7b" / "MODEL_UPPER.BIN").touch()  # проверяем регистр
-        (root / "readme.txt").touch()  # не модель
-
-        found = find_model_files(root)
-
-        print(f"Найдено файлов: {len(found)}")
-        for f in found:
-            print(f"  {f.relative_to(root)}")
-
-        # Проверки
-        assert len(found) == 3, f"Ожидали 3 файла, получили {len(found)}"
-        assert all(f.suffix.lower() in MODEL_EXTENSIONS for f in found)
-        assert found == sorted(found), "Список не отсортирован!"
-
-        print("✅ Все проверки пройдены")
 
 
 

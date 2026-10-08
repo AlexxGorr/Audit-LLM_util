@@ -197,7 +197,12 @@ def cmd_init(
 
     logger.info("init_started")
     checks = [HashCheck()]  # для init — только hash, чтобы получить эталон
-    results = run_checks(config.models_dir, checks, logger, progress=progress)
+    results = run_checks(
+        config.models_dir, checks, logger,
+        etalon=old_hashes,
+        progress=progress,
+        exclude_dirs=[config.quarantine_dir],
+    )
     for path, checks_res in results.items():
         hash_res = checks_res.get("hash")
         if hash_res and hash_res.status == "warn":
@@ -252,7 +257,12 @@ def cmd_audit(
     except ValueError as e:
         logger.error("invalid_check", extra={"extra_data": {"error": str(e)}})
         return 1
-    results = run_checks(config.models_dir, checks, logger, etalon=old_hashes, progress=progress)
+    results = run_checks(
+        config.models_dir, checks, logger,
+        etalon=old_hashes,
+        progress=progress,
+        exclude_dirs=[config.quarantine_dir],
+    )
     state = build_state(results, config.models_dir)
     save_state(state, config.state_path)
     new_hashes = extract_hash_size(results)
@@ -397,7 +407,7 @@ def cmd_inbox(
         }})
         return 1
 
-    files = find_model_files(config.models_dir)
+    files = find_model_files(config.models_dir, exclude_dirs=[config.quarantine_dir],)
     state = load_state(config.state_path)
 
     models = []
@@ -458,7 +468,7 @@ def cmd_inspect(
         if not config.models_dir.is_dir():
             logger.error("models_dir_not_found", extra={'extra_data': {'path': paths}})
             return 1
-        files = find_model_files(config.models_dir)
+        files = find_model_files(config.models_dir, exclude_dirs=[config.quarantine_dir],)
     elif paths:
         files = [Path(p) for p in paths]
         # проверить, что все существуют
@@ -788,6 +798,7 @@ def run_checks(
     logger: logging.Logger,
     etalon: dict | None = None,
     progress: "ProgressReporter | None" = None,
+    exclude_dirs: list[Path] | None = None,
 ) -> dict:
     """Запускает проверки для всех файлов. Возвращает {path: {check_name: CheckResult}}."""
     if not models_dir.is_dir():
@@ -795,7 +806,7 @@ def run_checks(
             'path': str(models_dir)
         }})
         raise FileNotFoundError(f'Файл не найден: {models_dir}')
-    files = find_model_files(models_dir)
+    files = find_model_files(models_dir, exclude_dirs=exclude_dirs)
     if not files:
         logger.warning('no_models_found', extra={'extra_data': {
             'path': str(models_dir)
@@ -904,6 +915,63 @@ def _collect_issues(results: dict) -> tuple[dict, dict]:
                     "details": check_res.details,
                 })
     return failures, warnings
+
+
+def _print_trust_table(result):
+    print()
+    print(f"🔍 Trust check: {result.repo_id}")
+    print()
+
+    if not result.exists:
+        print(f"❌ {result.error}")
+        print()
+        return
+
+    print(f"  Author:       {result.author}{' (official)' if result.author_official else ''}")
+    print(f"  Downloads:    {result.downloads:,}")
+    print(f"  Likes:        {result.likes:,}")
+    print(f"  Created:      {result.created_at[:10] if result.created_at else '?'}")
+    print(f"  Last update:  {result.last_modified[:10] if result.last_modified else '?'}")
+    print(f"  License:      {result.license or '—'}")
+    print(f"  Model card:   {'✓' if result.has_model_card else '✗'}")
+    print(f"  Files:        {result.files_count}")
+    print()
+
+    print(f"  Trust score:  {result.trust_score}/100")
+    print()
+
+    for reason in result.reasons:
+        sign = reason["sign"]
+        marker = {"+": "✓", "-": "✗", "0": "○"}.get(sign, "·")
+        print(f"    {marker} {reason['text']}")
+
+    print()
+    status = status_from_score(result.trust_score)
+    label = {"pass": "✅ TRUSTED", "warn": "⚠️  CAUTION", "fail": "🚨 LOW TRUST"}[status]
+    print(f"  {label}")
+    print()
+
+
+
+def _print_trust_json(result):
+    output = {
+        "repo_id": result.repo_id,
+        "exists": result.exists,
+        "author": result.author,
+        "author_official": result.author_official,
+        "downloads": result.downloads,
+        "likes": result.likes,
+        "created_at": result.created_at,
+        "last_modified": result.last_modified,
+        "license": result.license,
+        "has_model_card": result.has_model_card,
+        "files_count": result.files_count,
+        "trust_score": result.trust_score,
+        "reasons": result.reasons,
+        "duration_ms": result.duration_ms,
+        "error": result.error,
+    }
+    print(json.dumps(output, indent=2, ensure_ascii=False))
 
 
 

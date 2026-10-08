@@ -42,16 +42,44 @@ def get_checks(names: list[str] | None = None) -> list[Check]:
     return [get_check(n) for n in names]
 
 
+# __all__ = [
+#     "Check",
+#     "CheckResult",
+#     "HashCheck",
+#     "REGISTRY",
+#     "get_all_checks",
+#     "get_check",
+#     "get_checks",
+#     "HeaderCheck",
+#     'PickleCheck',
+# ]
+
+
+def all_supported_extensions() -> set[str]:
+    """Объединение SUPPORTED всех зарегистрированных проверок.
+
+    Используется в scanner.py для поиска файлов моделей.
+    Проверки без атрибута SUPPORTED (например, hash) игнорируются.
+    """
+    extensions: set[str] = set()
+    for check_cls in REGISTRY.values():
+        supported = getattr(check_cls, "SUPPORTED", None)
+        if supported:
+            extensions.update(supported)
+    return extensions
+
+
 __all__ = [
     "Check",
     "CheckResult",
     "HashCheck",
+    "HeaderCheck",
+    "PickleCheck",
     "REGISTRY",
     "get_all_checks",
     "get_check",
     "get_checks",
-    "HeaderCheck",
-    'PickleCheck',
+    "all_supported_extensions",
 ]
 
 
