@@ -2,6 +2,7 @@
 import logging
 import sys
 import typer
+import json
 
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from auditllm.config import load_secret_key, load_config, Config
 from auditllm.logging_setup import setup_logger, suppress_console_logging
 from auditllm.progress import ProgressReporter
 from auditllm.core import cmd_audit, cmd_init, cmd_list, cmd_inbox, cmd_inspect
+from auditllm.trust import check_trust, status_from_score
 
 app = typer.Typer(
     name="auditllm",
@@ -239,6 +241,101 @@ def inspect(
         check_names=show,
         as_json=as_json,
     ))
+
+
+
+@app.command()
+def trust(
+        repo_id: str = typer.Argument(..., help="HuggingFace repo ID, e.g. meta-llama/Llama-2-7b"),
+        timeout: int = typer.Option(5, "--timeout", help="HTTP timeout в секундах"),
+        as_json: bool = typer.Option(False, "--json", help="JSON output"),
+        verbose: bool = typer.Option(False, "-v", "--verbose", help="Подробный вывод"),
+):
+    """Проверить репутацию репозитория на HuggingFace.
+
+    Не проверяет содержимое файлов. Для аудита — команда audit.
+    """
+    result = check_trust(repo_id, timeout=timeout)
+
+    if as_json:
+        _print_trust_json(result)
+    else:
+        _print_trust_table(result)
+
+    # Код возврата
+    if not result.exists:
+        raise typer.Exit(1)
+    status = status_from_score(result.trust_score)
+    if status == "fail":
+        raise typer.Exit(2)
+    if status == "warn":
+        raise typer.Exit(1)
+    raise typer.Exit(0)
+
+
+def _print_trust_table(result):
+    """Простой вывод trust-проверки."""
+    print()
+    print(f"🔍 Trust check: {result.repo_id}")
+    print()
+
+    if not result.exists:
+        print(f"❌ {result.error}")
+        print()
+        return
+
+    print(f"  Author:       {result.author}"
+          + (" (official)" if result.author_official else ""))
+    print(f"  Downloads:    {result.downloads:,}")
+    print(f"  Likes:        {result.likes:,}")
+    print(f"  Created:      {result.created_at[:10] if result.created_at else '?'}")
+    print(f"  Last update:  {result.last_modified[:10] if result.last_modified else '?'}")
+    print(f"  License:      {result.license or '—'}")
+    print(f"  Model card:   {'✓' if result.has_model_card else '✗'}")
+    print(f"  Files:        {result.files_count}")
+    print(f'  Gated:        {result.gated}')
+    print()
+
+    print(f"  Trust score:  {result.trust_score}/100")
+    print()
+
+    for reason in result.reasons:
+        sign = reason.get("sign", "0")
+        marker = {"+": "✓", "-": "✗", "0": "○"}.get(sign, "·")
+        print(f"    {marker} {reason['text']}")
+
+    print()
+    status = status_from_score(result.trust_score)
+    label = {
+        "pass": "✅ TRUSTED",
+        "warn": "⚠️  CAUTION",
+        "fail": "🚨 LOW TRUST",
+    }.get(status, "?")
+    print(f"  {label}")
+    print()
+
+
+def _print_trust_json(result):
+    """JSON-вывод trust-проверки."""
+    output = {
+        "repo_id": result.repo_id,
+        "exists": result.exists,
+        "author": result.author,
+        "author_official": result.author_official,
+        "downloads": result.downloads,
+        "likes": result.likes,
+        "created_at": result.created_at,
+        "last_modified": result.last_modified,
+        "license": result.license,
+        "has_model_card": result.has_model_card,
+        "files_count": result.files_count,
+        "trust_score": result.trust_score,
+        "reasons": result.reasons,
+        "duration_ms": result.duration_ms,
+        "error": result.error,
+    }
+    print(json.dumps(output, indent=2, ensure_ascii=False))
+
 
 
 # if __name__ == "__main__":
