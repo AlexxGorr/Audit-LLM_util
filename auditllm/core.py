@@ -470,12 +470,17 @@ def cmd_inspect(
             return 1
         files = find_model_files(config.models_dir, exclude_dirs=[config.quarantine_dir],)
     elif paths:
-        files = [Path(p) for p in paths]
-        # проверить, что все существуют
-        for f in files:
-            if not f.is_file():
-                logger.error("file_not_found", extra={"extra_data": {"path": str(f)}})
+        resolved = []
+        for p in paths:
+            r = _resolve_path(Path(p), config.models_dir)
+            if r is None:
+                logger.error("file_not_found", extra={"extra_data": {
+                    "path": str(p),
+                    "hint": f"Не найден ни как {p}, ни в {config.models_dir}",
+                }})
                 return 1
+            resolved.append(r)
+        files = resolved
     else:
         logger.error("no_files_specified", extra={'extra_data': {'path': paths}})
         return 1
@@ -915,6 +920,17 @@ def _collect_issues(results: dict) -> tuple[dict, dict]:
                     "details": check_res.details,
                 })
     return failures, warnings
+
+
+def _resolve_path(path: Path, models_dir: Path) -> Path | None:
+    """Разрешает путь: сначала как есть, потом в models_dir."""
+    if path.is_file():
+        return path
+    if not path.is_absolute():
+        candidate = models_dir / path
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def _print_trust_table(result):
