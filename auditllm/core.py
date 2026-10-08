@@ -470,17 +470,16 @@ def cmd_inspect(
             return 1
         files = find_model_files(config.models_dir, exclude_dirs=[config.quarantine_dir],)
     elif paths:
-        resolved = []
+        files = []
         for p in paths:
-            r = _resolve_path(Path(p), config.models_dir)
-            if r is None:
+            resolved = _resolve_path(Path(p), config.models_dir)
+            if resolved is None:
                 logger.error("file_not_found", extra={"extra_data": {
                     "path": str(p),
                     "hint": f"Не найден ни как {p}, ни в {config.models_dir}",
                 }})
                 return 1
-            resolved.append(r)
-        files = resolved
+            files.append(resolved)
     else:
         logger.error("no_files_specified", extra={'extra_data': {'path': paths}})
         return 1
@@ -923,13 +922,25 @@ def _collect_issues(results: dict) -> tuple[dict, dict]:
 
 
 def _resolve_path(path: Path, models_dir: Path) -> Path | None:
-    """Разрешает путь: сначала как есть, потом в models_dir."""
+    """Разрешает путь: сначала как есть, потом в models_dir.
+
+    Args:
+        path: путь из CLI (может быть относительным или полным)
+        models_dir: папка с моделями (fallback)
+
+    Returns:
+        Resolved Path или None, если файл не найден.
+    """
+    # 1. Как есть
     if path.is_file():
         return path
+
+    # 2. Если относительный — попробуем в models_dir
     if not path.is_absolute():
         candidate = models_dir / path
         if candidate.is_file():
             return candidate
+
     return None
 
 
