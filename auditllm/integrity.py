@@ -42,18 +42,23 @@ def load_hashes_verified(path: Path, key: bytes) -> dict:
 
     return data
 
-def load_hashes_unverified(path: Path):
-    """
-    Загружает эталон БЕЗ проверки подписи.
 
-    Использовать только для некритичных операций (list).
+def load_hashes_unverified(path: Path) -> dict:
+    """Загружает эталон БЕЗ проверки подписи.
+
+    Использовать только для некритичных операций (list, inbox).
     Для аудита — load_hashes_verified.
+
+    Returns:
+        dict {path: {hash, size}} или {} если файла нет / битый.
     """
     if not path.is_file():
-        raise FileNotFoundError(f'Эталон не найден: {path}')
-
-    payload = json.loads(path.read_text(encoding='utf-8'))
-    return payload['data']
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload.get("data", {})
+    except (json.JSONDecodeError, OSError):
+        return {}
 
 
 if __name__ == "__main__":

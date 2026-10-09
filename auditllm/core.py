@@ -8,7 +8,7 @@ from datetime import datetime
 
 from auditllm.checks.hash_check import HashCheck
 
-from auditllm.integrity import load_hashes_verified, save_hashes_signed
+from auditllm.integrity import load_hashes_verified, save_hashes_signed, load_hashes_unverified
 from auditllm.quarantine import quarantine_file
 from auditllm.scanner import find_model_files
 from auditllm.config import Config
@@ -199,7 +199,7 @@ def cmd_init(
     checks = [HashCheck()]  # для init — только hash, чтобы получить эталон
     results = run_checks(
         config.models_dir, checks, logger,
-        etalon=old_hashes,
+        etalon=None,
         progress=progress,
         exclude_dirs=[config.quarantine_dir],
     )
@@ -339,6 +339,7 @@ def cmd_audit(
 
 def cmd_list(config: Config, logger: logging.Logger, as_json: bool = False) -> int:
     state = load_state(config.state_path)
+    etalon = load_hashes_unverified(config.etalon_path)
     if not state:
         logger.warning("state_not_found_for_list", extra={"extra_data": {
             "path": str(config.state_path),
@@ -350,6 +351,7 @@ def cmd_list(config: Config, logger: logging.Logger, as_json: bool = False) -> i
     for path, entry in state.items():
         file_path = config.models_dir / path
         present = file_path.is_file()
+        in_etalon = path in etalon
         # Определяем статусы checks
         if present:
             actual_size = file_path.stat().st_size
@@ -375,6 +377,7 @@ def cmd_list(config: Config, logger: logging.Logger, as_json: bool = False) -> i
             "present": present,
             "last_audit": entry.get('last_audit'),
             "checks": checks_status,
+            "in_etalon": in_etalon,
         })
 
     models.sort(key=lambda x: x["path"])
@@ -383,6 +386,8 @@ def cmd_list(config: Config, logger: logging.Logger, as_json: bool = False) -> i
         "total": len(models),
         "present": present_count,
         "absent": len(models) - present_count,
+        "in_etalon": sum(1 for m in models if m["in_etalon"]),
+        "not_in_etalon": sum(1 for m in models if not m["in_etalon"]),
     }
 
     # 5. Вывод
@@ -409,12 +414,14 @@ def cmd_inbox(
 
     files = find_model_files(config.models_dir, exclude_dirs=[config.quarantine_dir],)
     state = load_state(config.state_path)
+    etalon = load_hashes_unverified(config.etalon_path)
 
     models = []
     for file_path in files:
         relative = file_path.relative_to(config.models_dir)
         st = file_path.stat()
         state_entry = state.get(str(relative))
+        in_etalon = str(relative) in etalon
 
         # Статус в реестре
         if state_entry is None:
@@ -433,6 +440,7 @@ def cmd_inbox(
             "size": st.st_size,
             "size_human": format_size(st.st_size),
             "registry_status": registry_status,
+            "in_etalon": in_etalon,
         })
 
     models.sort(key=lambda x: x["path"])
@@ -444,6 +452,8 @@ def cmd_inbox(
         "modified": sum(1 for m in models if m["registry_status"] == "modified"),
         "total_size": sum(m["size"] for m in models),
         "total_size_human": format_size(sum(m["size"] for m in models)),
+        "in_etalon": sum(1 for m in models if m["in_etalon"]),
+        "not_in_etalon": sum(1 for m in models if not m["in_etalon"]),
     }
 
     if as_json:
@@ -672,6 +682,11 @@ REGISTRY_LABELS = {
     "new":      "[dim][ ][/dim]",
 }
 
+IN_ETALON_LABELS = {
+    True:  "[green][+][/green]",
+    False: "[dim][-][/dim]",
+}
+
 
 PRESENCE_LABELS = {
     True:  "[green][+][/green]",
@@ -699,6 +714,7 @@ def _print_list_table(models_dir, models, summary):
     table.add_column("Имя")
     table.add_column("Размер", justify="right")
     table.add_column("Наличие", justify="center")
+    table.add_column("Эталон", justify="center")
     for name in check_names:
         table.add_column(name, justify="center")
     table.add_column("Последняя проверка", justify="right")
@@ -709,6 +725,7 @@ def _print_list_table(models_dir, models, summary):
             m["name"],
             m["size_human"],
             PRESENCE_LABELS[m["present"]],
+            IN_ETALON_LABELS[m["in_etalon"]],
         ]
         for name in check_names:
             status = m["checks"].get(name, "unknown")
@@ -723,6 +740,11 @@ def _print_list_table(models_dir, models, summary):
         f"\nИтого: {summary['total']} записей, "
         f"{summary['present']} на диске, {summary['absent']} отсутствуют"
     )
+    if summary.get("in_etalon") is not None:
+        console.print(
+            f"[dim]В эталоне: {summary['in_etalon']}, "
+            f"не в эталоне: {summary['not_in_etalon']}[/dim]"
+        )
 
 
 
@@ -753,6 +775,7 @@ def _print_inbox_table(models_dir, models, summary):
     table.add_column("Имя")
     table.add_column("Размер", justify="right")
     table.add_column("Реестр", justify="center")
+    table.add_column("Эталон", justify="center")
 
     for i, m in enumerate(models, 1):
         table.add_row(
@@ -760,6 +783,7 @@ def _print_inbox_table(models_dir, models, summary):
             m["name"],
             m["size_human"],
             REGISTRY_LABELS[m["registry_status"]],
+            IN_ETALON_LABELS[m["in_etalon"]],
         )
 
     console.print(table)
@@ -774,6 +798,9 @@ def _print_inbox_table(models_dir, models, summary):
         parts.append(f"{summary['modified']} изменён" + ("о" if summary['modified'] > 1 else ""))
     if parts:
         console.print(f"\nИтого: {', '.join(parts)}")
+
+    etalon_info = f"В эталоне: {summary['in_etalon']}, не в эталоне: {summary['not_in_etalon']}"
+    console.print(f"[dim]{etalon_info}[/dim]")
 
 
 def _print_inbox_json(models_dir, models, summary):
