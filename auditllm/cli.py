@@ -106,6 +106,11 @@ def audit(
         False, "--no-quarantine",
         help="Не перемещать подозрительные файлы в карантин"
     ),
+    new_only: bool = typer.Option(
+            False, "--new-only",
+            help="Проверять только файлы, которых нет в эталоне (быстро). "
+                 "Существующие файлы не перепроверяются.",
+        ),
     check: list[str] | None = typer.Option(
         None, "--check",
         help="Проверки для запуска (можно несколько: --check hash --check header). "
@@ -126,6 +131,7 @@ def audit(
                 code = cmd_audit(config, logger, key,
                                  update_etalon=update_etalon,
                                  no_quarantine=no_quarantine,
+                                 new_only=new_only,
                                  progress=progress,
                                  check_names=check
                                  )
@@ -133,6 +139,7 @@ def audit(
             code = cmd_audit(config, logger, key,
                              update_etalon=update_etalon,
                              no_quarantine=no_quarantine,
+                             new_only=new_only,
                              progress=progress,
                              check_names=check
                              )

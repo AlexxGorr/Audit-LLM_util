@@ -1,4 +1,3 @@
-# auditllm/checks/__init__.py
 from auditllm.checks.base import Check, CheckResult
 from auditllm.checks.hash_check import HashCheck
 from auditllm.checks.header_check import HeaderCheck
@@ -41,18 +40,6 @@ def get_checks(names: list[str] | None = None) -> list[Check]:
         return get_all_checks()
     return [get_check(n) for n in names]
 
-
-# __all__ = [
-#     "Check",
-#     "CheckResult",
-#     "HashCheck",
-#     "REGISTRY",
-#     "get_all_checks",
-#     "get_check",
-#     "get_checks",
-#     "HeaderCheck",
-#     'PickleCheck',
-# ]
 
 
 def all_supported_extensions() -> set[str]:

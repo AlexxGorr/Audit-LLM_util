@@ -225,10 +225,19 @@ def cmd_audit(
     key: bytes,
     update_etalon: bool = False,
     no_quarantine: bool = False,
+    new_only: bool = False,
     progress: "ProgressReporter | None" = None,
     check_names: list[str] | None = None,
 ) -> int:
-    """Запускает аудит. Возвращает код выхода."""
+    """Запускает аудит. Возвращает код выхода.
+
+    Args:
+        update_etalon: обновить эталон (added/removed, не modified)
+        no_quarantine: не перемещать подозрительные файлы
+        new_only: проверять только файлы, которых нет в эталоне
+        check_names: какие проверки запускать (None → все)
+    """
+    # ─── 1. Проверка эталона ───
     if not config.etalon_path.exists():
         logger.error("etalon_not_found", extra={"extra_data": {
             "path": str(config.etalon_path),
@@ -246,29 +255,82 @@ def cmd_audit(
         }})
         return 2
 
+    # ─── 2. Проверка папки ───
     if not config.models_dir.is_dir():
         logger.error("models_dir_not_found", extra={"extra_data": {
             "path": str(config.models_dir)
         }})
         return 1
 
+    # ─── 3. Проверки ───
     try:
-        checks = get_checks(check_names)  # None → все
+        checks = get_checks(check_names)
     except ValueError as e:
         logger.error("invalid_check", extra={"extra_data": {"error": str(e)}})
         return 1
+
+    # ─── 4. Определяем файлы для сканирования ───
+    files_to_scan: list[Path] | None = None
+
+    if new_only:
+        all_files = find_model_files(
+            config.models_dir,
+            exclude_dirs=[config.quarantine_dir],
+        )
+        files_to_scan = [
+            f for f in all_files
+            if str(f.relative_to(config.models_dir)) not in old_hashes
+        ]
+
+        logger.info("new_only_mode", extra={"extra_data": {
+            "total": len(all_files),
+            "to_scan": len(files_to_scan),
+            "skipped": len(all_files) - len(files_to_scan),
+        }})
+
+        if not files_to_scan:
+            print("🔍 Режим --new-only: все файлы уже в эталоне")
+            print_report(
+                {"unchanged": [], "modified": [], "added": [], "removed": []},
+                {},
+            )
+            return 0
+
+        print(
+            f"🔍 Режим --new-only: {len(files_to_scan)} новых "
+            f"из {len(all_files)} "
+            f"(пропущено {len(all_files) - len(files_to_scan)})"
+        )
+
+    # ─── 5. Сканирование ───
     results = run_checks(
         config.models_dir, checks, logger,
         etalon=old_hashes,
         progress=progress,
         exclude_dirs=[config.quarantine_dir],
+        files=files_to_scan,
     )
-    state = build_state(results, config.models_dir)
-    save_state(state, config.state_path)
-    new_hashes = extract_hash_size(results)
-    diff = compare_states(old_hashes, new_hashes)
 
-    # ─── Обработка modified → карантин ───
+    # ─── 6. State: объединяем с существующим при new_only ───
+    new_state = build_state(results, config.models_dir)
+    if new_only:
+        old_state = load_state(config.state_path)
+        merged_state = {**old_state, **new_state}
+        save_state(merged_state, config.state_path)
+    else:
+        save_state(new_state, config.state_path)
+
+    # ─── 7. Сравнение ───
+    new_hashes = extract_hash_size(results)
+
+    if new_only:
+        # Только added — объединяем old + new, чтобы не было ложных removed
+        combined = {**old_hashes, **new_hashes}
+        diff = compare_states(old_hashes, combined)
+    else:
+        diff = compare_states(old_hashes, new_hashes)
+
+    # ─── 8. Карантин для modified ───
     for item in diff["modified"]:
         path = item["path"]
         logger.warning("modified_detected", extra={"extra_data": {
@@ -293,6 +355,8 @@ def cmd_audit(
                     "path": path,
                     "hint": "Файл исчез между сканированием и карантином"
                 }})
+
+    # ─── 9. Проверка critical fails ───
     critical_check_failed = False
     for path, checks_res in results.items():
         for check_name, check_res in checks_res.items():
@@ -304,16 +368,16 @@ def cmd_audit(
                 }})
                 critical_check_failed = True
 
-    # ─── Логирование added/removed ───
+    # ─── 10. Логирование added/removed ───
     for path in diff["added"]:
         logger.info("file_added", extra={"extra_data": {"path": path}})
     for path in diff["removed"]:
         logger.info("file_removed", extra={"extra_data": {"path": path}})
 
-    # ─── Отчёт ───
+    # ─── 11. Отчёт ───
     print_report(diff, results)
 
-    # ─── Обновление эталона ───
+    # ─── 12. Обновление эталона ───
     if update_etalon:
         updated = dict(old_hashes)
         for path in diff["added"]:
@@ -329,7 +393,7 @@ def cmd_audit(
         }})
         print(f"✅ Эталон обновлён: {len(updated)} файлов")
 
-    # ─── Код возврата ───
+    # ─── 13. Код возврата ───
     if diff["modified"] or critical_check_failed:
         return 2
     if diff["added"] or diff["removed"]:
@@ -830,6 +894,7 @@ def run_checks(
     etalon: dict | None = None,
     progress: "ProgressReporter | None" = None,
     exclude_dirs: list[Path] | None = None,
+    files: list[Path] | None = None,
 ) -> dict:
     """Запускает проверки для всех файлов. Возвращает {path: {check_name: CheckResult}}."""
     if not models_dir.is_dir():
@@ -837,7 +902,8 @@ def run_checks(
             'path': str(models_dir)
         }})
         raise FileNotFoundError(f'Файл не найден: {models_dir}')
-    files = find_model_files(models_dir, exclude_dirs=exclude_dirs)
+    if files is None:
+        files = find_model_files(models_dir, exclude_dirs=exclude_dirs)
     if not files:
         logger.warning('no_models_found', extra={'extra_data': {
             'path': str(models_dir)
