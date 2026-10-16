@@ -63,26 +63,25 @@ class HeaderCheck(Check):
         )
 
     def _check_gguf(self, file_path: Path) -> dict:
-        """Читает 24-байтовый заголовок GGUF."""
+        """Читает заголовок и метаданные GGUF."""
+        # 1. Быстрая проверка magic (как было)
         with open(file_path, "rb") as f:
             header = f.read(24)
-
         if len(header) < 24:
             raise ValueError(f"File too small for GGUF: {len(header)} bytes")
-
         magic = header[0:4]
         if magic != b"GGUF":
             raise ValueError(f"Invalid GGUF magic: {magic!r}")
 
         version, tensor_count, metadata_kv_count = struct.unpack("<IQQ", header[4:24])
 
-        # Sanity checks
+        # 2. Sanity checks
         KNOWN_VERSIONS = {1, 2, 3}
         version_known = version in KNOWN_VERSIONS
         tensor_count_ok = 1 <= tensor_count <= 100_000
         metadata_kv_ok = 0 <= metadata_kv_count <= 100_000
 
-        return {
+        result = {
             "format": "GGUF",
             "version": version,
             "version_str": f"GGUF v{version}",
@@ -94,6 +93,123 @@ class HeaderCheck(Check):
                 "metadata_kv_ok": metadata_kv_ok,
             },
         }
+
+        # 3. Читаем метаданные через gguf (опционально)
+        try:
+            from gguf import GGUFReader
+            reader = GGUFReader(str(file_path))
+
+            # Извлекаем ключевые поля
+            metadata = self._extract_gguf_metadata(reader)
+            if metadata:
+                result["metadata"] = metadata
+        except ImportError:
+            result["metadata_error"] = "gguf library not installed"
+        except Exception as e:
+            result["metadata_error"] = str(e)
+
+        return result
+
+    def _extract_gguf_metadata(self, reader) -> dict:
+        """Извлекает ключевые метаданные из GGUFReader.
+
+        Динамически определяет архитектуру и извлекает поля <arch>.*
+        """
+        metadata = {}
+
+        # 1. Общие поля (general.*)
+        GENERAL_FIELDS = {
+            "general.architecture": "architecture",
+            "general.name": "name",
+            "general.author": "author",
+            "general.license": "license",
+            "general.description": "description",
+            "general.file_type": "file_type",
+            "general.basename": "basename",
+            "general.size_label": "size_label",
+            "general.quantization_version": "quantization_version",
+        }
+
+        # 2. Определяем архитектуру (для динамического поиска <arch>.*)
+        architecture = None
+        if "general.architecture" in reader.fields:
+            field_obj = reader.fields["general.architecture"]
+            arch_value = self._gguf_value_to_python(field_obj)
+            if arch_value:
+                architecture = arch_value
+                metadata["architecture"] = arch_value
+
+        # 3. Извлекаем общие поля
+        for field_name, short_name in GENERAL_FIELDS.items():
+            if field_name == "general.architecture":
+                continue  # уже извлекли
+            if field_name in reader.fields:
+                value = self._gguf_value_to_python(reader.fields[field_name])
+                if value is not None:
+                    metadata[short_name] = value
+
+        # 4. Извлекаем архитектурно-специфичные поля: <arch>.context_length и т.д.
+        if architecture:
+            ARCH_FIELDS = [
+                "context_length",
+                "embedding_length",
+                "block_count",
+                "feed_forward_length",
+                "attention.head_count",
+                "attention.head_count_kv",
+                "attention.layer_norm_rms_epsilon",
+                "rope.freq_base",
+                "vocab_size",
+            ]
+
+            for arch_field in ARCH_FIELDS:
+                full_name = f"{architecture}.{arch_field}"
+                if full_name in reader.fields:
+                    value = self._gguf_value_to_python(reader.fields[full_name])
+                    if value is not None:
+                        metadata[arch_field] = value
+
+        return metadata
+
+    def _gguf_value_to_python(self, field_obj):
+        """Конвертирует значение поля GGUF в Python.
+
+        Структура parts (GGUFReader):
+        - parts[0] — длина ключа
+        - parts[1] — байты ключа
+        - parts[2] — тип значения (uint32)
+        - parts[3] — длина значения (uint64) — опционально
+        - parts[-1] — само значение
+
+        Значение всегда в parts[-1].
+        """
+        try:
+            if not hasattr(field_obj, "parts") or not field_obj.parts:
+                return None
+
+            value_part = field_obj.parts[-1]
+
+            # Строка: dtype uint8
+            if hasattr(value_part, "dtype") and value_part.dtype == "uint8":
+                try:
+                    raw = value_part.tobytes().rstrip(b"\x00")
+                    decoded = raw.decode("utf-8")
+                    if decoded.isprintable():
+                        return decoded
+                except (UnicodeDecodeError, AttributeError):
+                    pass
+
+            # Число/массив: tolist()
+            if hasattr(value_part, "tolist"):
+                value = value_part.tolist()
+                if isinstance(value, list) and len(value) == 1:
+                    return value[0]
+                return value
+
+            return None
+        except Exception:
+            return None
+
 
     def _check_safetensors(self, file_path: Path) -> dict:
         """Читает длину и JSON-заголовок safetensors."""
