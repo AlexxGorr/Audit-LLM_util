@@ -290,10 +290,7 @@ def cmd_audit(
 
         if not files_to_scan:
             print("🔍 Режим --new-only: все файлы уже в эталоне")
-            print_report(
-                {"unchanged": [], "modified": [], "added": [], "removed": []},
-                {},
-            )
+            print("   Для полной проверки запусти: auditllm audit")
             return 0
 
         print(
@@ -434,7 +431,7 @@ def cmd_list(config: Config, logger: logging.Logger, as_json: bool = False) -> i
                 for name, res in entry.get("checks", {}).items()
             }
         models.append({
-            "name": Path(path).name,
+            "name": path,
             "path": path,
             "size": entry.get('size'),
             "size_human": format_size(entry["size"]) if entry.get("size") else "?",
@@ -499,7 +496,7 @@ def cmd_inbox(
             continue
 
         models.append({
-            "name": file_path.name,
+            "name": str(relative),
             "path": str(relative),
             "size": st.st_size,
             "size_human": format_size(st.st_size),
@@ -855,11 +852,11 @@ def _print_inbox_table(models_dir, models, summary):
     # Сводка
     parts = []
     if summary["verified"]:
-        parts.append(f"{summary['verified']} проверен" + ("о" if summary['verified'] > 1 else ""))
+        parts.append(f"{summary['verified']} проверено")
     if summary["new"]:
-        parts.append(f"{summary['new']} новый" + ("х" if summary['new'] > 1 else ""))
+        parts.append(f"{summary['new']} новых")
     if summary["modified"]:
-        parts.append(f"{summary['modified']} изменён" + ("о" if summary['modified'] > 1 else ""))
+        parts.append(f"{summary['modified']} изменено")
     if parts:
         console.print(f"\nИтого: {', '.join(parts)}")
 
@@ -1015,25 +1012,16 @@ def _collect_issues(results: dict) -> tuple[dict, dict]:
 
 
 def _resolve_path(path: Path, models_dir: Path) -> Path | None:
-    """Разрешает путь: сначала как есть, потом в models_dir.
-
-    Args:
-        path: путь из CLI (может быть относительным или полным)
-        models_dir: папка с моделями (fallback)
-
-    Returns:
-        Resolved Path или None, если файл не найден.
-    """
-    # 1. Как есть
     if path.is_file():
         return path
-
-    # 2. Если относительный — попробуем в models_dir
     if not path.is_absolute():
         candidate = models_dir / path
         if candidate.is_file():
             return candidate
-
+        if path.parent == Path("."):
+            matches = sorted(m for m in models_dir.rglob(path.name) if m.is_file())
+            if matches:
+                return matches[0]
     return None
 
 
