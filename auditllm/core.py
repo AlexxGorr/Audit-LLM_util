@@ -834,6 +834,22 @@ def _print_list_table(models_dir, models, summary):
             f"не в эталоне: {summary['not_in_etalon']}[/dim]"
         )
 
+    tips = []
+
+    # Есть stale в checks
+    has_stale = any(
+        "stale" in m["checks"].values()
+        for m in models
+    )
+    if has_stale:
+        tips.append("Есть устаревшие записи — запусти: auditllm audit")
+
+    # Есть не в эталоне
+    if summary.get("not_in_etalon", 0) > 0:
+        tips.append("Добавь новые в эталон: auditllm audit --update-etalon")
+
+    _print_tips(tips)
+
 
 
 def _print_list_json(models_dir, models, summary):
@@ -843,6 +859,16 @@ def _print_list_json(models_dir, models, summary):
         "models": models,
     }
     print(json.dumps(output, indent=2, ensure_ascii=False))
+
+
+def _print_tips(tips: list[str]) -> None:
+    """Печатает подсказки."""
+    if not tips:
+        return
+    print()
+    print("💡 Подсказки:")
+    for tip in tips:
+        print(f"   • {tip}")
 
 
 def _print_inbox_table(models_dir, models, summary):
@@ -856,6 +882,7 @@ def _print_inbox_table(models_dir, models, summary):
 
     if not models:
         console.print("[yellow]Файлов не найдено[/yellow]")
+        _print_tips([f"Положи модели в {models_dir}"])
         return
 
     table = Table(show_header=True, header_style="bold")
@@ -889,6 +916,25 @@ def _print_inbox_table(models_dir, models, summary):
 
     etalon_info = f"В эталоне: {summary['in_etalon']}, не в эталоне: {summary['not_in_etalon']}"
     console.print(f"[dim]{etalon_info}[/dim]")
+
+    # Подсказки
+    tips = []
+    if summary["new"] > 0 and summary["not_in_etalon"] > 0:
+        tips.append("Проверь новые файлы: auditllm audit --new-only")
+        tips.append("После проверки добавь в эталон: auditllm audit --new-only --update-etalon")
+    elif summary["new"] > 0:
+        tips.append("Проверь новые файлы: auditllm audit --new-only")
+
+    if summary["modified"] > 0:
+        tips.append("Есть изменённые файлы — запусти: auditllm audit")
+
+    if summary["total"] == 0:
+        tips.append(f"Положи модели в {models_dir}")
+
+    if summary["verified"] == summary["total"] and summary["total"] > 0:
+        tips.append("Всё проверено. Периодически запускай: auditllm audit")
+
+    _print_tips(tips)
 
 
 def _print_inbox_json(models_dir, models, summary):
