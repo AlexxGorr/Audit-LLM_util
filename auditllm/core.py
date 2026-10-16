@@ -17,7 +17,7 @@ from auditllm.progress import ProgressReporter
 from auditllm.checks.base import CheckResult
 from auditllm.state import save_state, build_state
 from auditllm.state import load_state
-from auditllm.checks import get_checks
+from auditllm.checks import get_checks, get_all_checks
 
 from rich.console import Console
 from rich.table import Table
@@ -533,13 +533,30 @@ def cmd_inspect(
         check_names: list[str] | None = None,
         as_json: bool = False,
 ) -> int:
-    """Просмотр файлов без сохранения. Возвращает код выхода."""
-    # 1. Определить список файлов
+    """Просмотр файлов без сохранения. Возвращает код выхода.
+
+    По умолчанию запускает быстрые проверки (все, кроме hash).
+    Для проверки хеша — добавь 'hash' в check_names.
+
+    Args:
+        config: конфигурация
+        logger: логгер
+        paths: конкретные файлы (могут быть короткими именами)
+        all_files: все файлы в models_dir
+        check_names: список проверок (None → все кроме hash)
+        as_json: вывод в JSON
+    """
+    # ─── 1. Определить список файлов ───
     if all_files:
         if not config.models_dir.is_dir():
-            logger.error("models_dir_not_found", extra={'extra_data': {'path': paths}})
+            logger.error("models_dir_not_found", extra={"extra_data": {
+                "path": str(config.models_dir)
+            }})
             return 1
-        files = find_model_files(config.models_dir, exclude_dirs=[config.quarantine_dir],)
+        files = find_model_files(
+            config.models_dir,
+            exclude_dirs=[config.quarantine_dir],
+        )
     elif paths:
         files = []
         for p in paths:
@@ -552,21 +569,31 @@ def cmd_inspect(
                 return 1
             files.append(resolved)
     else:
-        logger.error("no_files_specified", extra={'extra_data': {'path': paths}})
+        logger.error("no_files_specified", extra={"extra_data": {
+            "path": str(config.models_dir),
+            "hint": "Укажи файлы или --all",
+        }})
         return 1
 
     if not files:
-        logger.warning("no_files_found", extra={'extra_data': {'path': paths}})
+        logger.warning("no_files_found", extra={"extra_data": {
+            "path": str(config.models_dir)
+        }})
         return 0
 
-    # 2. Получить проверки
+    # ─── 2. Определить проверки ───
     try:
-        checks = get_checks(check_names)
+        if check_names:
+            # Пользователь явно указал — используем
+            checks = get_checks(check_names)
+        else:
+            # По умолчанию — все КРОМЕ hash (он читает весь файл)
+            checks = [c for c in get_all_checks() if c.name != "hash"]
     except ValueError as e:
-        logger.error("invalid_check", extra={'extra_data': {'check': str(e)}})
+        logger.error("invalid_check", extra={"extra_data": {"error": str(e)}})
         return 1
 
-    # 3. Запустить проверки для каждого файла (context=None!)
+    # ─── 3. Запустить проверки для каждого файла ───
     results = []
     for file_path in files:
         file_res = {"path": str(file_path), "name": file_path.name}
@@ -587,14 +614,14 @@ def cmd_inspect(
                 )
                 continue
             try:
-                res = check.run(file_path, context=None)  # ← context=None!
+                res = check.run(file_path, context=None)
             except Exception as e:
                 res = CheckResult(status="fail", message=f"Check crashed: {e}")
             file_res["checks"][check.name] = res
 
         results.append(file_res)
 
-    # 4. Вывод
+    # ─── 4. Вывод ───
     if as_json:
         _print_inspect_json(results)
     else:

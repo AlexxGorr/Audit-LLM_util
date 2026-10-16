@@ -220,8 +220,9 @@ def inspect(
         ),
         show: list[str] | None = typer.Option(
             None, "--show",
-            help="Показать только указанные проверки "
-                 "(можно несколько: --show header --show hash)",
+            help="Проверки для показа. "
+                 "По умолчанию: header, pickle (быстрые). "
+                 "Для hash: --show hash (медленно — читает весь файл).",
         ),
         as_json: bool = typer.Option(False, "--json", help="Вывод в JSON (для CI/CD)"),
         config_path: Path | None = typer.Option(None, "--config", help="Путь к config.toml"),
@@ -232,8 +233,11 @@ def inspect(
 ):
     """Показать содержимое файлов (без сохранения в реестр).
 
-    Запускает проверки для указанных файлов и показывает результат.
-    Не изменяет models_state.json, не перемещает в карантин.
+        Запускает проверки для указанных файлов и показывает результат.
+        Не изменяет models_state.json, не перемещает в карантин.
+
+        По умолчанию запускает БЫСТРЫЕ проверки (header, pickle).
+        Для проверки хеша используй --show hash (читает весь файл).
     """
     # Проверка: хотя бы что-то указано
     if not paths and not all_files:
