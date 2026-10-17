@@ -5,9 +5,10 @@
 import logging
 from pathlib import Path
 from datetime import datetime
+import sys
 
+from auditllm.spinner import Spinner
 from auditllm.checks.hash_check import HashCheck
-
 from auditllm.integrity import load_hashes_verified, save_hashes_signed, load_hashes_unverified
 from auditllm.quarantine import quarantine_file
 from auditllm.scanner import find_model_files
@@ -374,21 +375,62 @@ def cmd_audit(
     # ─── 11. Отчёт ───
     print_report(diff, results)
 
-    # ─── 12. Обновление эталона ───
+    # ─── 12. Обновление эталона (гранулярно) ───
     if update_etalon:
         updated = dict(old_hashes)
+        added_clean = []  # pass / skip
+        added_with_warn = []  # warn (но без fail)
+        skipped_fail = []  # fail
+
         for path in diff["added"]:
+            file_checks = results.get(path, {})
+
+            has_fail = any(
+                res.status == "fail"
+                for res in file_checks.values()
+            )
+            has_warn = any(
+                res.status == "warn"
+                for res in file_checks.values()
+            )
+
+            if has_fail:
+                skipped_fail.append(path)
+                continue
+
+            # Добавляем (pass или warn)
             updated[path] = new_hashes[path]
+            if has_warn:
+                added_with_warn.append(path)
+            else:
+                added_clean.append(path)
+
+        # removed — только при update_etalon (как было)
         for path in diff["removed"]:
             updated.pop(path, None)
+
         save_hashes_signed(updated, config.etalon_path, key)
+
         logger.info("etalon_updated", extra={"extra_data": {
             "count": len(updated),
-            "added": len(diff["added"]),
+            "added_clean": added_clean,
+            "added_with_warn": added_with_warn,
+            "skipped_fail": skipped_fail,
             "removed": len(diff["removed"]),
-            "modified_skipped": len(diff["modified"])
+            "modified_skipped": len(diff["modified"]),
         }})
+
+        # Вывод
         print(f"✅ Эталон обновлён: {len(updated)} файлов")
+        if added_clean:
+            print(f"   Добавлены: {', '.join(added_clean)}")
+        if added_with_warn:
+            print(f"   ⚠️  Добавлены с warning: {', '.join(added_with_warn)}")
+        if skipped_fail:
+            print(f"   ❌ Пропущены (fail): {', '.join(skipped_fail)}")
+            print(f"   Для принудительного добавления: используй promote (TODO)")
+        if diff["removed"]:
+            print(f"   Удалены из эталона: {len(diff['removed'])}")
 
     # ─── 13. Код возврата ───
     if diff["modified"] or critical_check_failed:
@@ -593,33 +635,40 @@ def cmd_inspect(
         logger.error("invalid_check", extra={"extra_data": {"error": str(e)}})
         return 1
 
-    # ─── 3. Запустить проверки для каждого файла ───
+    # ─── 3. Запустить проверки (со спиннером) ───
     results = []
-    for file_path in files:
-        file_res = {"path": str(file_path), "name": file_path.name}
-        try:
-            st = file_path.stat()
-            file_res["size"] = st.st_size
-            file_res["size_human"] = format_size(st.st_size)
-        except OSError:
-            file_res["size"] = None
-            file_res["size_human"] = "?"
+    use_spinner = not as_json  # JSON → без спиннера
 
-        file_res["checks"] = {}
-        for check in checks:
-            if not check.supports(file_path):
-                file_res["checks"][check.name] = CheckResult(
-                    status="skip",
-                    message=f"Not supported for {file_path.suffix}",
-                )
-                continue
+    with Spinner(enabled=use_spinner, prefix="🔍 ") as spinner:
+        for i, file_path in enumerate(files):
+            spinner.update(f"{file_path.name} ({i + 1}/{len(files)})")
+
+            file_res = {"path": str(file_path), "name": file_path.name}
             try:
-                res = check.run(file_path, context=None)
-            except Exception as e:
-                res = CheckResult(status="fail", message=f"Check crashed: {e}")
-            file_res["checks"][check.name] = res
+                st = file_path.stat()
+                file_res["size"] = st.st_size
+                file_res["size_human"] = format_size(st.st_size)
+            except OSError:
+                file_res["size"] = None
+                file_res["size_human"] = "?"
 
-        results.append(file_res)
+            file_res["checks"] = {}
+            for check in checks:
+                if not check.supports(file_path):
+                    file_res["checks"][check.name] = CheckResult(
+                        status="skip",
+                        message=f"Not supported for {file_path.suffix}",
+                    )
+                    continue
+
+                spinner.update(f"{file_path.name} — {check.name}")
+                try:
+                    res = check.run(file_path, context=None)
+                except Exception as e:
+                    res = CheckResult(status="fail", message=f"Check crashed: {e}")
+                file_res["checks"][check.name] = res
+
+            results.append(file_res)
 
     # ─── 4. Вывод ───
     if as_json:
@@ -1005,6 +1054,9 @@ def run_checks(
                 res = check.run(file, context=context, progress=progress)
             except Exception as e:
                 res = CheckResult(status='fail', message=f'Check crashed: {e}')
+
+            if progress:
+                progress.finish_check()
 
             file_results[check.name] = res
             logger.debug('check_done', extra={
