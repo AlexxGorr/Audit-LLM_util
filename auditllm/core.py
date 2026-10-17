@@ -428,7 +428,7 @@ def cmd_audit(
             print(f"   ⚠️  Добавлены с warning: {', '.join(added_with_warn)}")
         if skipped_fail:
             print(f"   ❌ Пропущены (fail): {', '.join(skipped_fail)}")
-            print(f"   Для принудительного добавления: используй promote (TODO)")
+            print(f"   Для принудительного добавления: auditllm promote <file> --force")
         if diff["removed"]:
             print(f"   Удалены из эталона: {len(diff['removed'])}")
 
@@ -799,23 +799,36 @@ def cmd_promote(
     # 5. dry-run
     if dry_run:
         print("🔍 Dry run — эталон НЕ изменён")
+
+        # added — в строку
         if added_clean:
             print(f"   ✅ Будут добавлены: {', '.join(added_clean)}")
         if added_with_warn:
             print(f"   ⚠️  Будут добавлены с warning: {', '.join(added_with_warn)}")
         if added_forced:
             print(f"   ⚠️  Будут добавлены принудительно (fail): {', '.join(added_forced)}")
+
+        # skipped_* — в столбик
         if skipped_fail:
-            print(f"   ❌ Будут пропущены (fail): {', '.join(skipped_fail)}")
+            print(f"   ❌ Будут пропущены (fail, {len(skipped_fail)}):")
+            for p in skipped_fail:
+                print(f"      - {p}")
             print(f"      Используй --force для принудительного добавления")
         if skipped_not_in_state:
-            print(f"   ⏭️  Нет в state: {', '.join(skipped_not_in_state)}")
+            print(f"   ⏭️  Нет в state ({len(skipped_not_in_state)}):")
+            for p in skipped_not_in_state:
+                print(f"      - {p}")
         if skipped_no_hash:
-            print(f"   ⏭️  Нет hash в state: {', '.join(skipped_no_hash)}")
+            print(f"   ⏭️  Нет hash в state ({len(skipped_no_hash)}):")
+            for p in skipped_no_hash:
+                print(f"      - {p}")
+        if skipped_already_in_etalon:
+            print(f"   ⏭️  Уже в эталоне ({len(skipped_already_in_etalon)}):")
+            for p in skipped_already_in_etalon:
+                print(f"      - {p}")
+
         if not (added_clean or added_with_warn or added_forced):
             print("   Нечего добавлять")
-        if skipped_already_in_etalon:
-            print(f"   ⏭️  Уже в эталоне: {', '.join(skipped_already_in_etalon)}")
         return 0
 
     # 6. Проверка: есть ли что добавить?
@@ -823,8 +836,22 @@ def cmd_promote(
     if total_added == 0:
         print("Нечего добавлять в эталон")
         if skipped_fail:
-            print(f"   ❌ Пропущены (fail): {', '.join(skipped_fail)}")
+            print(f"   ❌ Пропущены (fail, {len(skipped_fail)}):")
+            for p in skipped_fail:
+                print(f"      - {p}")
             print(f"      Используй --force для принудительного добавления")
+        if skipped_not_in_state:
+            print(f"   ⏭️  Нет в state ({len(skipped_not_in_state)}):")
+            for p in skipped_not_in_state:
+                print(f"      - {p}")
+        if skipped_no_hash:
+            print(f"   ⏭️  Нет hash в state ({len(skipped_no_hash)}):")
+            for p in skipped_no_hash:
+                print(f"      - {p}")
+        if skipped_already_in_etalon:
+            print(f"   ⏭️  Уже в эталоне ({len(skipped_already_in_etalon)}):")
+            for p in skipped_already_in_etalon:
+                print(f"      - {p}")
         return 0
 
     # 7. Сохранить
@@ -854,19 +881,33 @@ def cmd_promote(
         print(json.dumps(output, indent=2, ensure_ascii=False))
     else:
         print(f"✅ Эталон обновлён: {len(updated)} файлов")
+
+        # added — в строку (обычно мало)
         if added_clean:
             print(f"   Добавлены: {', '.join(added_clean)}")
         if added_with_warn:
             print(f"   ⚠️  Добавлены с warning: {', '.join(added_with_warn)}")
         if added_forced:
             print(f"   ⚠️  Добавлены принудительно (fail): {', '.join(added_forced)}")
+
+        # skipped_* — в столбик (может быть много)
         if skipped_fail:
-            print(f"   ❌ Пропущены (fail): {', '.join(skipped_fail)}")
+            print(f"   ❌ Пропущены (fail, {len(skipped_fail)}):")
+            for p in skipped_fail:
+                print(f"      - {p}")
             print(f"      Используй --force для принудительного добавления")
         if skipped_not_in_state:
-            print(f"   ⏭️  Нет в state: {', '.join(skipped_not_in_state)}")
+            print(f"   ⏭️  Нет в state ({len(skipped_not_in_state)}):")
+            for p in skipped_not_in_state:
+                print(f"      - {p}")
+        if skipped_no_hash:
+            print(f"   ⏭️  Нет hash в state ({len(skipped_no_hash)}):")
+            for p in skipped_no_hash:
+                print(f"      - {p}")
         if skipped_already_in_etalon:
-            print(f"   ⏭️  Уже в эталоне: {', '.join(skipped_already_in_etalon)}")
+            print(f"   ⏭️  Уже в эталоне ({len(skipped_already_in_etalon)}):")
+            for p in skipped_already_in_etalon:
+                print(f"      - {p}")
 
     return 0
 
@@ -1087,7 +1128,7 @@ def _print_list_table(models_dir, models, summary):
 
     # Есть не в эталоне
     if summary.get("not_in_etalon", 0) > 0:
-        tips.append("Добавь новые в эталон: auditllm audit --update-etalon")
+        tips.append("Добавь проверенные в эталон: auditllm promote (без пересканирования)")
 
     _print_tips(tips)
 
@@ -1161,10 +1202,10 @@ def _print_inbox_table(models_dir, models, summary):
     # Подсказки
     tips = []
     if summary["new"] > 0 and summary["not_in_etalon"] > 0:
-        tips.append("Проверь новые файлы: auditllm audit --new-only")
-        tips.append("После проверки добавь в эталон: auditllm audit --new-only --update-etalon")
+        tips.append("Проверь новые: auditllm audit --new-only")
+        tips.append("Затем добавь в эталон: auditllm promote (без пересканирования)")
     elif summary["new"] > 0:
-        tips.append("Проверь новые файлы: auditllm audit --new-only")
+        tips.append("Проверь новые: auditllm audit --new-only")
 
     if summary["modified"] > 0:
         tips.append("Есть изменённые файлы — запусти: auditllm audit")
