@@ -9,8 +9,8 @@ from pathlib import Path
 from auditllm.config import load_secret_key, load_config, Config
 from auditllm.logging_setup import setup_logger, suppress_console_logging
 from auditllm.progress import ProgressReporter
-from auditllm.core import cmd_audit, cmd_init, cmd_list, cmd_inbox, cmd_inspect
 from auditllm.trust import check_trust, status_from_score
+from auditllm.core import cmd_audit, cmd_init, cmd_list, cmd_inbox, cmd_inspect, cmd_promote
 
 app = typer.Typer(
     name="auditllm",
@@ -250,6 +250,45 @@ def inspect(
         paths=paths,
         all_files=all_files,
         check_names=show,
+        as_json=as_json,
+    ))
+
+
+@app.command("promote")
+def promote(
+    paths: list[Path] = typer.Argument(
+        None,
+        help="Файлы (если не указано — все из state)",
+    ),
+    force: bool = typer.Option(
+        False, "--force",
+        help="Добавить даже файлы с fail-проверками",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Показать, что будет добавлено, но не менять эталон",
+    ),
+    as_json: bool = typer.Option(
+        False, "--json",
+        help="JSON-вывод",
+    ),
+    config_path: Path | None = typer.Option(None, "--config", help="Путь к config.toml"),
+    models_dir: Path | None = typer.Option(None, "--models-dir", help="Переопределить папку моделей"),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Переопределить папку данных"),
+    quarantine_dir: Path | None = typer.Option(None, "--quarantine-dir", help="Переопределить карантин"),
+    verbose: bool = typer.Option(False, "-v", "--verbose", help="Подробный вывод"),
+):
+    """Добавить проверенные файлы из state в эталон (без сканирования).
+
+    Берёт результаты последнего audit из models_state.json.
+    Для файлов без fail — добавляет. С --force — даже fail.
+    """
+    config, logger, key = _prepare(config_path, models_dir, data_dir, quarantine_dir, verbose)
+    raise typer.Exit(cmd_promote(
+        config, logger, key,
+        paths=paths,
+        force=force,
+        dry_run=dry_run,
         as_json=as_json,
     ))
 

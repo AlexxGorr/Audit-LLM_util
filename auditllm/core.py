@@ -679,6 +679,198 @@ def cmd_inspect(
     return 0
 
 
+def cmd_promote(
+    config: Config,
+    logger: logging.Logger,
+    key: bytes,
+    paths: list[Path] | None = None,
+    force: bool = False,
+    dry_run: bool = False,
+    as_json: bool = False,
+) -> int:
+    """Добавить проверенные файлы из state в эталон БЕЗ сканирования.
+
+    Args:
+        paths: конкретные файлы (если None — все из state)
+        force: добавить даже fail
+        dry_run: только показать, не менять
+        as_json: JSON-вывод
+
+    Returns:
+        0 — успех, 1 — ошибка, 2 — критическая ошибка
+    """
+    # 1. Загрузить state
+    state = load_state(config.state_path)
+    if not state:
+        logger.error("state_not_found", extra={"extra_data": {
+            "path": str(config.state_path),
+            "hint": "Запусти audit или init для создания state"
+        }})
+        return 1
+
+    # 2. Загрузить текущий эталон (проверка подписи!)
+    try:
+        old_hashes = load_hashes_verified(config.etalon_path, key)
+    except FileNotFoundError:
+        logger.error("etalon_not_found", extra={"extra_data": {
+            "path": str(config.etalon_path),
+            "hint": "Если это первый запуск — используй --init"
+        }})
+        return 1
+    except ValueError as e:
+        logger.error("etalon_signature_invalid", extra={"extra_data": {
+            "path": str(config.etalon_path),
+            "error": str(e),
+            "hint": "🚨 Возможна атака! Эталон подменён."
+        }})
+        return 2
+
+    # 3. Определить целевые файлы
+    if paths:
+        target_paths = []
+        for p in paths:
+            resolved = _resolve_path(Path(p), config.models_dir)
+            if resolved is None:
+                logger.error("file_not_found", extra={"extra_data": {
+                    "path": str(p),
+                    "hint": f"Не найден ни как {p}, ни в {config.models_dir}",
+                }})
+                return 1
+            relative = str(resolved.relative_to(config.models_dir))
+            target_paths.append(relative)
+    else:
+        target_paths = sorted(state.keys())
+
+    # 4. Классификация и подготовка обновления
+    updated = dict(old_hashes)
+    added_clean = []
+    added_with_warn = []
+    added_forced = []
+    skipped_fail = []
+    skipped_not_in_state = []
+    skipped_no_hash = []
+    skipped_already_in_etalon = []
+
+    for path in target_paths:
+        entry = state.get(path)
+        if entry is None:
+            skipped_not_in_state.append(path)
+            continue
+
+        # Уже в эталоне? — пропускаем (это главное!)
+        if path in old_hashes:
+            skipped_already_in_etalon.append(path)
+            continue
+
+        checks = entry.get("checks", {})
+        has_fail = any(r.get("status") == "fail" for r in checks.values())
+        has_warn = any(r.get("status") == "warn" for r in checks.values())
+
+        # Извлечь hash+size из state
+        hash_res = checks.get("hash", {})
+        details = hash_res.get("details", {})
+        hash_val = None
+        size_val = None
+        if "hash" in details and "size" in details:
+            hash_val = details["hash"]
+            size_val = details["size"]
+        elif "actual" in details:
+            hash_val = details["actual"].get("hash")
+            size_val = details["actual"].get("size")
+
+        if not hash_val or not size_val:
+            skipped_no_hash.append(path)
+            continue
+
+        # fail без --force → пропуск
+        if has_fail and not force:
+            skipped_fail.append(path)
+            continue
+
+        updated[path] = {"hash": hash_val, "size": size_val}
+
+        if has_fail:
+            added_forced.append(path)
+        elif has_warn:
+            added_with_warn.append(path)
+        else:
+            added_clean.append(path)
+
+    # 5. dry-run
+    if dry_run:
+        print("🔍 Dry run — эталон НЕ изменён")
+        if added_clean:
+            print(f"   ✅ Будут добавлены: {', '.join(added_clean)}")
+        if added_with_warn:
+            print(f"   ⚠️  Будут добавлены с warning: {', '.join(added_with_warn)}")
+        if added_forced:
+            print(f"   ⚠️  Будут добавлены принудительно (fail): {', '.join(added_forced)}")
+        if skipped_fail:
+            print(f"   ❌ Будут пропущены (fail): {', '.join(skipped_fail)}")
+            print(f"      Используй --force для принудительного добавления")
+        if skipped_not_in_state:
+            print(f"   ⏭️  Нет в state: {', '.join(skipped_not_in_state)}")
+        if skipped_no_hash:
+            print(f"   ⏭️  Нет hash в state: {', '.join(skipped_no_hash)}")
+        if not (added_clean or added_with_warn or added_forced):
+            print("   Нечего добавлять")
+        if skipped_already_in_etalon:
+            print(f"   ⏭️  Уже в эталоне: {', '.join(skipped_already_in_etalon)}")
+        return 0
+
+    # 6. Проверка: есть ли что добавить?
+    total_added = len(added_clean) + len(added_with_warn) + len(added_forced)
+    if total_added == 0:
+        print("Нечего добавлять в эталон")
+        if skipped_fail:
+            print(f"   ❌ Пропущены (fail): {', '.join(skipped_fail)}")
+            print(f"      Используй --force для принудительного добавления")
+        return 0
+
+    # 7. Сохранить
+    save_hashes_signed(updated, config.etalon_path, key)
+
+    logger.info("promoted", extra={"extra_data": {
+        "count": len(updated),
+        "added_clean": added_clean,
+        "added_with_warn": added_with_warn,
+        "added_forced": added_forced,
+        "skipped_fail": skipped_fail,
+        "skipped_not_in_state": skipped_not_in_state,
+        "skipped_no_hash": skipped_no_hash,
+    }})
+
+    # 8. Вывод
+    if as_json:
+        output = {
+            "count": len(updated),
+            "added_clean": added_clean,
+            "added_with_warn": added_with_warn,
+            "added_forced": added_forced,
+            "skipped_fail": skipped_fail,
+            "skipped_not_in_state": skipped_not_in_state,
+            "skipped_no_hash": skipped_no_hash,
+        }
+        print(json.dumps(output, indent=2, ensure_ascii=False))
+    else:
+        print(f"✅ Эталон обновлён: {len(updated)} файлов")
+        if added_clean:
+            print(f"   Добавлены: {', '.join(added_clean)}")
+        if added_with_warn:
+            print(f"   ⚠️  Добавлены с warning: {', '.join(added_with_warn)}")
+        if added_forced:
+            print(f"   ⚠️  Добавлены принудительно (fail): {', '.join(added_forced)}")
+        if skipped_fail:
+            print(f"   ❌ Пропущены (fail): {', '.join(skipped_fail)}")
+            print(f"      Используй --force для принудительного добавления")
+        if skipped_not_in_state:
+            print(f"   ⏭️  Нет в state: {', '.join(skipped_not_in_state)}")
+        if skipped_already_in_etalon:
+            print(f"   ⏭️  Уже в эталоне: {', '.join(skipped_already_in_etalon)}")
+
+    return 0
+
+
 def _print_inspect_table(results: list):
     for i, file_res in enumerate(results):
         if i > 0:
