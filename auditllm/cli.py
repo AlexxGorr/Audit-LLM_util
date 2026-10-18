@@ -10,7 +10,7 @@ from auditllm.config import load_secret_key, load_config, Config
 from auditllm.logging_setup import setup_logger, suppress_console_logging
 from auditllm.progress import ProgressReporter
 from auditllm.trust import check_trust, status_from_score
-from auditllm.core import cmd_audit, cmd_init, cmd_list, cmd_inbox, cmd_inspect, cmd_promote
+from auditllm.core import cmd_audit, cmd_init, cmd_list, cmd_inbox, cmd_inspect, cmd_promote, cmd_report
 
 app = typer.Typer(
     name="auditllm",
@@ -175,11 +175,24 @@ def list_models(
 
 @app.command()
 def report(
+    paths: list[Path] = typer.Argument(
+        None,
+        help="Файлы для просмотра (если не указано — последний audit из лога)",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="JSON-вывод"),
+    config_path: Path | None = typer.Option(None, "--config", help="Путь к config.toml"),
+    models_dir: Path | None = typer.Option(None, "--models-dir", help="Переопределить папку моделей"),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Переопределить папку данных"),
+    quarantine_dir: Path | None = typer.Option(None, "--quarantine-dir", help="Переопределить карантин"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Подробный вывод"),
 ):
-    """Показать последний отчёт аудита."""
-    typer.echo("🚧 Команда 'report' ещё не реализована")
-    raise typer.Exit(0)
+    """Показать результат последней проверки.
+
+    Без аргументов — последний audit из лога (diff).
+    С файлами — детали из state (мгновенно, без сканирования).
+    """
+    config, logger, _ = _prepare(config_path, models_dir, data_dir, quarantine_dir, verbose)
+    raise typer.Exit(cmd_report(config, logger, paths=paths, as_json=as_json))
 
 
 @app.command()

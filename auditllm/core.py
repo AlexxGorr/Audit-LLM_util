@@ -912,6 +912,108 @@ def cmd_promote(
     return 0
 
 
+def cmd_report(
+        config: Config,
+        logger: logging.Logger,
+        paths: list[Path] | None = None,
+        as_json: bool = False,
+) -> int:
+    """Показать результат последней проверки.
+
+    Режимы:
+    - paths=None: последний audit из лога (diff)
+    - paths=[file1, file2]: детали из state (мгновенно)
+    """
+    # Режим «последний audit»
+    if not paths:
+        from auditllm.report import read_last_audit
+
+        audit = read_last_audit(config.log_path)
+        if audit is None:
+            logger.warning("no_audit_in_log", extra={"extra_data": {
+                "path": str(config.log_path),
+                "hint": "Запусти auditllm audit"
+            }})
+            print("Нет записей об аудите в логе")
+            return 0
+
+        if as_json:
+            print(json.dumps(audit, indent=2, ensure_ascii=False))
+        else:
+            _print_last_audit(audit)
+        return 0
+
+    # Режим «из state»
+    state = load_state(config.state_path)
+    if not state:
+        logger.error("state_not_found", extra={"extra_data": {
+            "path": str(config.state_path),
+            "hint": "Запусти audit или init для создания state"
+        }})
+        return 1
+
+    results = []
+    for p in paths:
+        resolved = _resolve_path(Path(p), config.models_dir)
+
+        if resolved is not None:
+            relative = str(resolved.relative_to(config.models_dir))
+        else:
+            # Файл мог быть удалён — попробуем по имени в state
+            p_str = str(p)
+            # Ищем по basename
+            matches = [k for k in state.keys() if Path(k).name == Path(p_str).name]
+            if len(matches) == 1:
+                relative = matches[0]
+            elif len(matches) > 1:
+                logger.error("ambiguous_path", extra={"extra_data": {
+                    "path": str(p),
+                    "candidates": matches,
+                    "hint": "Укажи полный относительный путь",
+                }})
+                return 1
+            else:
+                logger.error("file_not_found", extra={"extra_data": {
+                    "path": str(p),
+                    "hint": f"Не найден ни в {config.models_dir}, ни в state",
+                }})
+                return 1
+
+        entry = state.get(relative)
+        if entry is None:
+            results.append({
+                "path": relative,
+                "error": "not in state",
+            })
+            continue
+
+        # Проверяем актуальность
+        file_path = config.models_dir / relative
+        present = file_path.is_file()
+        stale = False
+        if present:
+            actual_size = file_path.stat().st_size
+            if entry.get("size") != actual_size:
+                stale = True
+
+        results.append({
+            "path": relative,
+            "name": Path(relative).name,
+            "size": entry.get("size"),
+            "last_audit": entry.get("last_audit"),
+            "present": present,
+            "stale": stale,
+            "checks": entry.get("checks", {}),
+        })
+
+    if as_json:
+        _print_report_json(results, state)
+    else:
+        _print_report_table(results)
+
+    return 0
+
+
 def _print_inspect_table(results: list):
     for i, file_res in enumerate(results):
         if i > 0:
@@ -1012,6 +1114,62 @@ def _print_inspect_json(results: list):
         ],
     }
     print(json.dumps(output, indent=2, ensure_ascii=False))
+
+
+def _print_last_audit(audit: dict) -> None:
+    """Печатает последний audit-отчёт из лога."""
+    line = "=" * 55
+    print(line)
+    print("ПОСЛЕДНИЙ АУДИТ".center(55))
+    print(line)
+    print()
+
+    print(f"  Начат:      {_format_last_audit(audit.get('started_at'))}")
+    print(f"  Завершён:   {_format_last_audit(audit.get('finished_at'))}")
+    print()
+
+    summary = audit.get("summary", {})
+
+    failures = summary.get("check_failures", [])
+    if failures:
+        print(f"🚨 ПРОВАЛЫ ПРОВЕРОК ({len(failures)}):")
+        for f in failures:
+            print(f"    - {f['path']} [{f['check']}] — {f['message']}")
+        print()
+
+    modified = summary.get("modified", [])
+    if modified:
+        print(f"⚠️  ИЗМЕНЁННЫЕ ({len(modified)}):")
+        for m in modified:
+            print(f"    - {m['path']} | {m['reason']}")
+        print()
+
+    added = summary.get("added", [])
+    if added:
+        print(f"➕ ДОБАВЛЕННЫЕ ({len(added)}):")
+        for a in added:
+            print(f"    - {a}")
+        print()
+
+    removed = summary.get("removed", [])
+    if removed:
+        print(f"➖ УДАЛЁННЫЕ ({len(removed)}):")
+        for r in removed:
+            print(f"    - {r}")
+        print()
+
+    quarantined = summary.get("quarantined", [])
+    if quarantined:
+        print(f"🚧 В КАРАНТИНЕ ({len(quarantined)}):")
+        for q in quarantined:
+            print(f"    - {q}")
+        print()
+
+    if not any([failures, modified, added, removed, quarantined]):
+        print("  Замечаний нет.")
+        print()
+
+    print(line)
 
 
 def compute_checks_status(state_entry: dict | None, file_size: int) -> dict:
@@ -1436,6 +1594,48 @@ def _print_trust_json(result):
         "reasons": result.reasons,
         "duration_ms": result.duration_ms,
         "error": result.error,
+    }
+    print(json.dumps(output, indent=2, ensure_ascii=False))
+
+
+def _print_report_table(results: list) -> None:
+    """Печатает детали из state."""
+    for i, file_res in enumerate(results):
+        if i > 0:
+            print()
+
+        if "error" in file_res:
+            print(f"❌ {file_res['path']}")
+            print(f"   {file_res['error']}")
+            continue
+
+        size_str = format_size(file_res["size"]) if file_res["size"] else "?"
+        present_str = "[+]" if file_res["present"] else "[-]"
+        stale_str = " ⚠️  изменился после проверки" if file_res["stale"] else ""
+
+        print(f"📄 {file_res['name']} ({size_str})")
+        print(f"   Path: {file_res['path']}")
+        print(f"   Present: {present_str}{stale_str}")
+        last_audit = _format_last_audit(file_res.get("last_audit"))
+        print(f"   Last audit: {last_audit}")
+        print()
+
+        for check_name, check_res in file_res.get("checks", {}).items():
+            status = check_res.get("status", "?")
+            message = check_res.get("message", "")
+            details = check_res.get("details", {})
+            duration = check_res.get("duration_ms", 0)
+
+            print(f"🔒 {check_name}: [{_status_short(status)}] — {message} ({duration} ms)")
+            if details:
+                _print_details(details)
+            print()
+
+def _print_report_json(results: list, state: dict) -> None:
+    """JSON-вывод."""
+    output = {
+        "count": len(results),
+        "files": results,
     }
     print(json.dumps(output, indent=2, ensure_ascii=False))
 
