@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 from datetime import datetime
 import sys
+import shutil
 
 from auditllm.spinner import Spinner
 from auditllm.checks.hash_check import HashCheck
@@ -1010,6 +1011,99 @@ def cmd_report(
         _print_report_json(results, state)
     else:
         _print_report_table(results)
+
+    return 0
+
+
+def cmd_reset(
+        config: Config,
+        logger: logging.Logger,
+        key: bytes,
+        no_backup: bool = False,
+        yes: bool = False,
+) -> int:
+    """Сбросить эталон, state и лог с бэкапом.
+
+    Начало с чистого листа. Модели и карантин не трогаются.
+
+    Args:
+        no_backup: без бэкапа (опасно)
+        yes: без подтверждения
+    """
+    # 1. Подтверждение
+    if not yes:
+        print()
+        print("⚠️  СБРОС:")
+        print(f"   Эталон:   {config.etalon_path}")
+        print(f"   State:    {config.state_path}")
+        print(f"   Лог:      {config.log_path}")
+        if not no_backup:
+            print(f"   Бэкап:    {config.data_dir / 'backups'}")
+        print()
+        print("НЕ трогаются: модели, карантин, config, .env")
+        print()
+
+        try:
+            answer = input("Введи 'yes' для подтверждения: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nОтменено")
+            return 0
+
+        if answer != "yes":
+            print("Отменено")
+            return 0
+
+    # 2. Бэкап
+    backups_dir = config.data_dir / "backups"
+    timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    backup_paths = []
+
+    if not no_backup:
+        backups_dir.mkdir(parents=True, exist_ok=True)
+
+        # Эталон
+        if config.etalon_path.exists():
+            bak = backups_dir / f"model_hashes.json.{timestamp}.bak"
+            shutil.copy2(config.etalon_path, bak)
+            backup_paths.append(bak)
+
+        # State
+        if config.state_path.exists():
+            bak = backups_dir / f"models_state.json.{timestamp}.bak"
+            shutil.copy2(config.state_path, bak)
+            backup_paths.append(bak)
+
+        # Лог
+        if config.log_path.exists():
+            bak = backups_dir / f"audit_log.jsonl.{timestamp}.bak"
+            shutil.copy2(config.log_path, bak)
+            backup_paths.append(bak)
+
+    # 3. Сброс эталона
+    save_hashes_signed({}, config.etalon_path, key)
+    print(f"✅ Эталон сброшен: {config.etalon_path}")
+
+    # 4. Сброс state
+    save_state({}, config.state_path)
+    print(f"✅ State сброшен: {config.state_path}")
+
+    # 5. Сброс лога
+    if config.log_path.exists():
+        config.log_path.unlink()
+    config.log_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"✅ Лог сброшен: {config.log_path}")
+
+    # 6. Логируем reset в новый лог
+    logger.info("reset_completed", extra={"extra_data": {
+        "backups": [str(b) for b in backup_paths],
+    }})
+
+    # 7. Вывод бэкапов
+    if backup_paths:
+        print()
+        print("Бэкапы:")
+        for bak in backup_paths:
+            print(f"   - {bak}")
 
     return 0
 
