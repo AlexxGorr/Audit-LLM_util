@@ -26,7 +26,6 @@ from rich.table import Table
 import json
 
 
-
 # ─── Сравнение ──────────────────────────────────────────
 def compare_states(old: dict, new: dict) -> dict:
     """Сравнивает эталон и текущее состояние."""
@@ -39,7 +38,6 @@ def compare_states(old: dict, new: dict) -> dict:
     old_keys = set(old.keys())
     new_keys = set(new.keys())
 
-    # Файлы в обоих состояниях
     for path in (old_keys & new_keys):
         old_entry = old[path]
         new_entry = new[path]
@@ -47,7 +45,6 @@ def compare_states(old: dict, new: dict) -> dict:
         if old_entry == new_entry:
             result['unchanged'].append(path)
         else:
-            # Определяем причину
             if old_entry['size'] != new_entry['size']:
                 reason = 'size_mismatch'
             else:
@@ -59,11 +56,10 @@ def compare_states(old: dict, new: dict) -> dict:
                 'expected': old_entry,
                 'actual': new_entry,
             })
-    # Новые файлы (в new, но не в old)
+
     for path in (new_keys - old_keys):
         result['added'].append(path)
 
-    # Пропавшие файлы (в old, но не в new)
     for path in (old_keys - new_keys):
         result['removed'].append(path)
 
@@ -79,7 +75,6 @@ def print_report(diff: dict, results: dict) -> None:
     print(line)
     print()
 
-    # ─── 1. ЦЕЛОСТНОСТЬ ───
     unchanged = len(diff["unchanged"])
     modified = len(diff["modified"])
     added = len(diff["added"])
@@ -112,7 +107,6 @@ def print_report(diff: dict, results: dict) -> None:
             print(f"    - {path}")
         print()
 
-    # ─── 2. ПРОВЕРКИ БЕЗОПАСНОСТИ ───
     agg = _aggregate_checks(results)
     if agg:
         print("🔒 ПРОВЕРКИ БЕЗОПАСНОСТИ:")
@@ -130,7 +124,6 @@ def print_report(diff: dict, results: dict) -> None:
             print(f"  {check_name:10s} {'   '.join(parts)}")
         print()
 
-    # ─── 3. КРИТИЧНЫЕ ПРОБЛЕМЫ ───
     failures, warnings = _collect_issues(results)
 
     if failures:
@@ -141,7 +134,6 @@ def print_report(diff: dict, results: dict) -> None:
                 print(f"    - {issue['path']} — {issue['message']}")
         print()
 
-    # ─── 4. ПРЕДУПРЕЖДЕНИЯ ───
     if warnings:
         print("⚠️  ПРЕДУПРЕЖДЕНИЯ:")
         for check_name in sorted(warnings):
@@ -150,7 +142,6 @@ def print_report(diff: dict, results: dict) -> None:
                 print(f"    - {issue['path']} — {issue['message']}")
         print()
 
-    # ─── 5. ВЕРДИКТ ───
     total_fails = sum(len(v) for v in failures.values())
 
     if modified or total_fails:
@@ -198,7 +189,7 @@ def cmd_init(
         return 1
 
     logger.info("init_started")
-    checks = [HashCheck()]  # для init — только hash, чтобы получить эталон
+    checks = [HashCheck()]
     results = run_checks(
         config.models_dir, checks, logger,
         etalon=None,
@@ -208,7 +199,6 @@ def cmd_init(
     for path, checks_res in results.items():
         hash_res = checks_res.get("hash")
         if hash_res and hash_res.status == "warn":
-            # эталон только что создан из этих файлов → pass
             hash_res.status = "pass"
             hash_res.message = "Hash calculated (etalon created)"
     hashes = extract_hash_size(results)
@@ -231,15 +221,7 @@ def cmd_audit(
     progress: "ProgressReporter | None" = None,
     check_names: list[str] | None = None,
 ) -> int:
-    """Запускает аудит. Возвращает код выхода.
-
-    Args:
-        update_etalon: обновить эталон (added/removed, не modified)
-        no_quarantine: не перемещать подозрительные файлы
-        new_only: проверять только файлы, которых нет в эталоне
-        check_names: какие проверки запускать (None → все)
-    """
-    # ─── 1. Проверка эталона ───
+    """Запускает аудит. Возвращает код выхода."""
     if not config.etalon_path.exists():
         logger.error("etalon_not_found", extra={"extra_data": {
             "path": str(config.etalon_path),
@@ -257,21 +239,18 @@ def cmd_audit(
         }})
         return 2
 
-    # ─── 2. Проверка папки ───
     if not config.models_dir.is_dir():
         logger.error("models_dir_not_found", extra={"extra_data": {
             "path": str(config.models_dir)
         }})
         return 1
 
-    # ─── 3. Проверки ───
     try:
         checks = get_checks(check_names)
     except ValueError as e:
         logger.error("invalid_check", extra={"extra_data": {"error": str(e)}})
         return 1
 
-    # ─── 4. Определяем файлы для сканирования ───
     files_to_scan: list[Path] | None = None
 
     if new_only:
@@ -301,7 +280,6 @@ def cmd_audit(
             f"(пропущено {len(all_files) - len(files_to_scan)})"
         )
 
-    # ─── 5. Сканирование ───
     results = run_checks(
         config.models_dir, checks, logger,
         etalon=old_hashes,
@@ -310,7 +288,6 @@ def cmd_audit(
         files=files_to_scan,
     )
 
-    # ─── 6. State: объединяем с существующим при new_only ───
     new_state = build_state(results, config.models_dir)
     if new_only:
         old_state = load_state(config.state_path)
@@ -319,17 +296,14 @@ def cmd_audit(
     else:
         save_state(new_state, config.state_path)
 
-    # ─── 7. Сравнение ───
     new_hashes = extract_hash_size(results)
 
     if new_only:
-        # Только added — объединяем old + new, чтобы не было ложных removed
         combined = {**old_hashes, **new_hashes}
         diff = compare_states(old_hashes, combined)
     else:
         diff = compare_states(old_hashes, new_hashes)
 
-    # ─── 8. Карантин для modified ───
     for item in diff["modified"]:
         path = item["path"]
         logger.warning("modified_detected", extra={"extra_data": {
@@ -355,7 +329,6 @@ def cmd_audit(
                     "hint": "Файл исчез между сканированием и карантином"
                 }})
 
-    # ─── 9. Проверка critical fails ───
     critical_check_failed = False
     for path, checks_res in results.items():
         for check_name, check_res in checks_res.items():
@@ -367,46 +340,35 @@ def cmd_audit(
                 }})
                 critical_check_failed = True
 
-    # ─── 10. Логирование added/removed ───
     for path in diff["added"]:
         logger.info("file_added", extra={"extra_data": {"path": path}})
     for path in diff["removed"]:
         logger.info("file_removed", extra={"extra_data": {"path": path}})
 
-    # ─── 11. Отчёт ───
     print_report(diff, results)
 
-    # ─── 12. Обновление эталона (гранулярно) ───
     if update_etalon:
         updated = dict(old_hashes)
-        added_clean = []  # pass / skip
-        added_with_warn = []  # warn (но без fail)
-        skipped_fail = []  # fail
+        added_clean = []
+        added_with_warn = []
+        skipped_fail = []
 
         for path in diff["added"]:
             file_checks = results.get(path, {})
 
-            has_fail = any(
-                res.status == "fail"
-                for res in file_checks.values()
-            )
-            has_warn = any(
-                res.status == "warn"
-                for res in file_checks.values()
-            )
+            has_fail = any(res.status == "fail" for res in file_checks.values())
+            has_warn = any(res.status == "warn" for res in file_checks.values())
 
             if has_fail:
                 skipped_fail.append(path)
                 continue
 
-            # Добавляем (pass или warn)
             updated[path] = new_hashes[path]
             if has_warn:
                 added_with_warn.append(path)
             else:
                 added_clean.append(path)
 
-        # removed — только при update_etalon (как было)
         for path in diff["removed"]:
             updated.pop(path, None)
 
@@ -421,7 +383,6 @@ def cmd_audit(
             "modified_skipped": len(diff["modified"]),
         }})
 
-        # Вывод
         print(f"✅ Эталон обновлён: {len(updated)} файлов")
         if added_clean:
             print(f"   Добавлены: {', '.join(added_clean)}")
@@ -433,7 +394,6 @@ def cmd_audit(
         if diff["removed"]:
             print(f"   Удалены из эталона: {len(diff['removed'])}")
 
-    # ─── 13. Код возврата ───
     if diff["modified"] or critical_check_failed:
         return 2
     if diff["added"] or diff["removed"]:
@@ -450,17 +410,14 @@ def cmd_list(config: Config, logger: logging.Logger, as_json: bool = False) -> i
             "hint": "Запусти audit или init для создания state"
         }})
 
-    # 4. Сбор данных
     models = []
     for path, entry in state.items():
         file_path = config.models_dir / path
         present = file_path.is_file()
         in_etalon = path in etalon
-        # Определяем статусы checks
         if present:
             actual_size = file_path.stat().st_size
             if entry.get("size") != actual_size:
-                # файл изменился → все проверки stale
                 checks_status = {name: "stale" for name in entry.get("checks", {})}
             else:
                 checks_status = {
@@ -468,7 +425,6 @@ def cmd_list(config: Config, logger: logging.Logger, as_json: bool = False) -> i
                     for name, res in entry.get("checks", {}).items()
                 }
         else:
-            # файла нет — последние известные статусы
             checks_status = {
                 name: res.get("status", "unknown")
                 for name, res in entry.get("checks", {}).items()
@@ -480,6 +436,7 @@ def cmd_list(config: Config, logger: logging.Logger, as_json: bool = False) -> i
             "size_human": format_size(entry["size"]) if entry.get("size") else "?",
             "present": present,
             "last_audit": entry.get('last_audit'),
+            "file_duration_ms": entry.get('file_duration_ms', 0),
             "checks": checks_status,
             "in_etalon": in_etalon,
         })
@@ -494,7 +451,6 @@ def cmd_list(config: Config, logger: logging.Logger, as_json: bool = False) -> i
         "not_in_etalon": sum(1 for m in models if not m["in_etalon"]),
     }
 
-    # 5. Вывод
     if as_json:
         _print_list_json(config.models_dir, models, summary)
     else:
@@ -516,7 +472,7 @@ def cmd_inbox(
         }})
         return 1
 
-    files = find_model_files(config.models_dir, exclude_dirs=[config.quarantine_dir],)
+    files = find_model_files(config.models_dir, exclude_dirs=[config.quarantine_dir])
     state = load_state(config.state_path)
     etalon = load_hashes_unverified(config.etalon_path)
 
@@ -527,7 +483,6 @@ def cmd_inbox(
         state_entry = state.get(str(relative))
         in_etalon = str(relative) in etalon
 
-        # Статус в реестре
         if state_entry is None:
             registry_status = "new"
         elif state_entry.get("size") != st.st_size:
@@ -576,20 +531,7 @@ def cmd_inspect(
         check_names: list[str] | None = None,
         as_json: bool = False,
 ) -> int:
-    """Просмотр файлов без сохранения. Возвращает код выхода.
-
-    По умолчанию запускает быстрые проверки (все, кроме hash).
-    Для проверки хеша — добавь 'hash' в check_names.
-
-    Args:
-        config: конфигурация
-        logger: логгер
-        paths: конкретные файлы (могут быть короткими именами)
-        all_files: все файлы в models_dir
-        check_names: список проверок (None → все кроме hash)
-        as_json: вывод в JSON
-    """
-    # ─── 1. Определить список файлов ───
+    """Просмотр файлов без сохранения. Возвращает код выхода."""
     if all_files:
         if not config.models_dir.is_dir():
             logger.error("models_dir_not_found", extra={"extra_data": {
@@ -624,21 +566,17 @@ def cmd_inspect(
         }})
         return 0
 
-    # ─── 2. Определить проверки ───
     try:
         if check_names:
-            # Пользователь явно указал — используем
             checks = get_checks(check_names)
         else:
-            # По умолчанию — все КРОМЕ hash (он читает весь файл)
             checks = [c for c in get_all_checks() if c.name != "hash"]
     except ValueError as e:
         logger.error("invalid_check", extra={"extra_data": {"error": str(e)}})
         return 1
 
-    # ─── 3. Запустить проверки (со спиннером) ───
     results = []
-    use_spinner = not as_json  # JSON → без спиннера
+    use_spinner = not as_json
 
     with Spinner(enabled=use_spinner, prefix="🔍 ") as spinner:
         for i, file_path in enumerate(files):
@@ -671,7 +609,6 @@ def cmd_inspect(
 
             results.append(file_res)
 
-    # ─── 4. Вывод ───
     if as_json:
         _print_inspect_json(results)
     else:
@@ -689,18 +626,7 @@ def cmd_promote(
     dry_run: bool = False,
     as_json: bool = False,
 ) -> int:
-    """Добавить проверенные файлы из state в эталон БЕЗ сканирования.
-
-    Args:
-        paths: конкретные файлы (если None — все из state)
-        force: добавить даже fail
-        dry_run: только показать, не менять
-        as_json: JSON-вывод
-
-    Returns:
-        0 — успех, 1 — ошибка, 2 — критическая ошибка
-    """
-    # 1. Загрузить state
+    """Добавить проверенные файлы из state в эталон БЕЗ сканирования."""
     state = load_state(config.state_path)
     if not state:
         logger.error("state_not_found", extra={"extra_data": {
@@ -709,7 +635,6 @@ def cmd_promote(
         }})
         return 1
 
-    # 2. Загрузить текущий эталон (проверка подписи!)
     try:
         old_hashes = load_hashes_verified(config.etalon_path, key)
     except FileNotFoundError:
@@ -726,7 +651,6 @@ def cmd_promote(
         }})
         return 2
 
-    # 3. Определить целевые файлы
     if paths:
         target_paths = []
         for p in paths:
@@ -742,7 +666,6 @@ def cmd_promote(
     else:
         target_paths = sorted(state.keys())
 
-    # 4. Классификация и подготовка обновления
     updated = dict(old_hashes)
     added_clean = []
     added_with_warn = []
@@ -758,7 +681,6 @@ def cmd_promote(
             skipped_not_in_state.append(path)
             continue
 
-        # Уже в эталоне? — пропускаем (это главное!)
         if path in old_hashes:
             skipped_already_in_etalon.append(path)
             continue
@@ -767,7 +689,6 @@ def cmd_promote(
         has_fail = any(r.get("status") == "fail" for r in checks.values())
         has_warn = any(r.get("status") == "warn" for r in checks.values())
 
-        # Извлечь hash+size из state
         hash_res = checks.get("hash", {})
         details = hash_res.get("details", {})
         hash_val = None
@@ -783,7 +704,6 @@ def cmd_promote(
             skipped_no_hash.append(path)
             continue
 
-        # fail без --force → пропуск
         if has_fail and not force:
             skipped_fail.append(path)
             continue
@@ -797,66 +717,39 @@ def cmd_promote(
         else:
             added_clean.append(path)
 
-    # 5. dry-run
     if dry_run:
         print("🔍 Dry run — эталон НЕ изменён")
-
-        # added — в строку
-        if added_clean:
-            print(f"   ✅ Будут добавлены: {', '.join(added_clean)}")
-        if added_with_warn:
-            print(f"   ⚠️  Будут добавлены с warning: {', '.join(added_with_warn)}")
-        if added_forced:
-            print(f"   ⚠️  Будут добавлены принудительно (fail): {', '.join(added_forced)}")
-
-        # skipped_* — в столбик
-        if skipped_fail:
-            print(f"   ❌ Будут пропущены (fail, {len(skipped_fail)}):")
-            for p in skipped_fail:
-                print(f"      - {p}")
-            print(f"      Используй --force для принудительного добавления")
-        if skipped_not_in_state:
-            print(f"   ⏭️  Нет в state ({len(skipped_not_in_state)}):")
-            for p in skipped_not_in_state:
-                print(f"      - {p}")
-        if skipped_no_hash:
-            print(f"   ⏭️  Нет hash в state ({len(skipped_no_hash)}):")
-            for p in skipped_no_hash:
-                print(f"      - {p}")
-        if skipped_already_in_etalon:
-            print(f"   ⏭️  Уже в эталоне ({len(skipped_already_in_etalon)}):")
-            for p in skipped_already_in_etalon:
-                print(f"      - {p}")
-
+        _print_added_lists(added_clean, added_with_warn, added_forced)
+        _print_skipped_lists(
+            skipped_fail, skipped_not_in_state,
+            skipped_no_hash, skipped_already_in_etalon,
+        )
         if not (added_clean or added_with_warn or added_forced):
             print("   Нечего добавлять")
         return 0
 
-    # 6. Проверка: есть ли что добавить?
     total_added = len(added_clean) + len(added_with_warn) + len(added_forced)
     if total_added == 0:
         print("Нечего добавлять в эталон")
-        if skipped_fail:
-            print(f"   ❌ Пропущены (fail, {len(skipped_fail)}):")
-            for p in skipped_fail:
-                print(f"      - {p}")
-            print(f"      Используй --force для принудительного добавления")
-        if skipped_not_in_state:
-            print(f"   ⏭️  Нет в state ({len(skipped_not_in_state)}):")
-            for p in skipped_not_in_state:
-                print(f"      - {p}")
-        if skipped_no_hash:
-            print(f"   ⏭️  Нет hash в state ({len(skipped_no_hash)}):")
-            for p in skipped_no_hash:
-                print(f"      - {p}")
-        if skipped_already_in_etalon:
-            print(f"   ⏭️  Уже в эталоне ({len(skipped_already_in_etalon)}):")
-            for p in skipped_already_in_etalon:
-                print(f"      - {p}")
+        _print_skipped_lists(
+            skipped_fail, skipped_not_in_state,
+            skipped_no_hash, skipped_already_in_etalon,
+        )
         return 0
 
-    # 7. Сохранить
     save_hashes_signed(updated, config.etalon_path, key)
+
+    # Обновить state: hash → pass
+    for path in (added_clean + added_with_warn + added_forced):
+        entry = state.get(path)
+        if entry is None:
+            continue
+        checks = entry.get("checks", {})
+        hash_res = checks.get("hash", {})
+        if hash_res.get("status") == "warn":
+            hash_res["status"] = "pass"
+            hash_res["message"] = "Hash matches etalon (promoted)"
+    save_state(state, config.state_path)
 
     logger.info("promoted", extra={"extra_data": {
         "count": len(updated),
@@ -868,7 +761,6 @@ def cmd_promote(
         "skipped_no_hash": skipped_no_hash,
     }})
 
-    # 8. Вывод
     if as_json:
         output = {
             "count": len(updated),
@@ -882,35 +774,59 @@ def cmd_promote(
         print(json.dumps(output, indent=2, ensure_ascii=False))
     else:
         print(f"✅ Эталон обновлён: {len(updated)} файлов")
-
-        # added — в строку (обычно мало)
-        if added_clean:
-            print(f"   Добавлены: {', '.join(added_clean)}")
-        if added_with_warn:
-            print(f"   ⚠️  Добавлены с warning: {', '.join(added_with_warn)}")
-        if added_forced:
-            print(f"   ⚠️  Добавлены принудительно (fail): {', '.join(added_forced)}")
-
-        # skipped_* — в столбик (может быть много)
-        if skipped_fail:
-            print(f"   ❌ Пропущены (fail, {len(skipped_fail)}):")
-            for p in skipped_fail:
-                print(f"      - {p}")
-            print(f"      Используй --force для принудительного добавления")
-        if skipped_not_in_state:
-            print(f"   ⏭️  Нет в state ({len(skipped_not_in_state)}):")
-            for p in skipped_not_in_state:
-                print(f"      - {p}")
-        if skipped_no_hash:
-            print(f"   ⏭️  Нет hash в state ({len(skipped_no_hash)}):")
-            for p in skipped_no_hash:
-                print(f"      - {p}")
-        if skipped_already_in_etalon:
-            print(f"   ⏭️  Уже в эталоне ({len(skipped_already_in_etalon)}):")
-            for p in skipped_already_in_etalon:
-                print(f"      - {p}")
+        _print_added_lists(added_clean, added_with_warn, added_forced)
+        _print_skipped_lists(
+            skipped_fail, skipped_not_in_state,
+            skipped_no_hash, skipped_already_in_etalon,
+        )
 
     return 0
+
+
+def _print_added_lists(added_clean, added_with_warn, added_forced):
+    """Печатает added-списки: в строку если <= 3, иначе в столбик."""
+    if added_clean:
+        if len(added_clean) <= 3:
+            print(f"   Добавлены: {', '.join(added_clean)}")
+        else:
+            print(f"   Добавлены ({len(added_clean)}):")
+            for p in added_clean:
+                print(f"      - {p}")
+    if added_with_warn:
+        if len(added_with_warn) <= 3:
+            print(f"   ⚠️  Добавлены с warning: {', '.join(added_with_warn)}")
+        else:
+            print(f"   ⚠️  Добавлены с warning ({len(added_with_warn)}):")
+            for p in added_with_warn:
+                print(f"      - {p}")
+    if added_forced:
+        if len(added_forced) <= 3:
+            print(f"   ⚠️  Добавлены принудительно (fail): {', '.join(added_forced)}")
+        else:
+            print(f"   ⚠️  Добавлены принудительно (fail, {len(added_forced)}):")
+            for p in added_forced:
+                print(f"      - {p}")
+
+
+def _print_skipped_lists(skipped_fail, skipped_not_in_state, skipped_no_hash, skipped_already_in_etalon):
+    """Печатает skipped-списки: всегда в столбик."""
+    if skipped_fail:
+        print(f"   ❌ Пропущены (fail, {len(skipped_fail)}):")
+        for p in skipped_fail:
+            print(f"      - {p}")
+        print(f"      Используй --force для принудительного добавления")
+    if skipped_not_in_state:
+        print(f"   ⏭️  Нет в state ({len(skipped_not_in_state)}):")
+        for p in skipped_not_in_state:
+            print(f"      - {p}")
+    if skipped_no_hash:
+        print(f"   ⏭️  Нет hash в state ({len(skipped_no_hash)}):")
+        for p in skipped_no_hash:
+            print(f"      - {p}")
+    if skipped_already_in_etalon:
+        print(f"   ⏭️  Уже в эталоне ({len(skipped_already_in_etalon)}):")
+        for p in skipped_already_in_etalon:
+            print(f"      - {p}")
 
 
 def cmd_report(
@@ -919,13 +835,7 @@ def cmd_report(
         paths: list[Path] | None = None,
         as_json: bool = False,
 ) -> int:
-    """Показать результат последней проверки.
-
-    Режимы:
-    - paths=None: последний audit из лога (diff)
-    - paths=[file1, file2]: детали из state (мгновенно)
-    """
-    # Режим «последний audit»
+    """Показать результат последней проверки."""
     if not paths:
         from auditllm.report import read_last_audit
 
@@ -944,7 +854,6 @@ def cmd_report(
             _print_last_audit(audit)
         return 0
 
-    # Режим «из state»
     state = load_state(config.state_path)
     if not state:
         logger.error("state_not_found", extra={"extra_data": {
@@ -960,9 +869,7 @@ def cmd_report(
         if resolved is not None:
             relative = str(resolved.relative_to(config.models_dir))
         else:
-            # Файл мог быть удалён — попробуем по имени в state
             p_str = str(p)
-            # Ищем по basename
             matches = [k for k in state.keys() if Path(k).name == Path(p_str).name]
             if len(matches) == 1:
                 relative = matches[0]
@@ -988,7 +895,6 @@ def cmd_report(
             })
             continue
 
-        # Проверяем актуальность
         file_path = config.models_dir / relative
         present = file_path.is_file()
         stale = False
@@ -1002,6 +908,7 @@ def cmd_report(
             "name": Path(relative).name,
             "size": entry.get("size"),
             "last_audit": entry.get("last_audit"),
+            "file_duration_ms": entry.get("file_duration_ms", 0),
             "present": present,
             "stale": stale,
             "checks": entry.get("checks", {}),
@@ -1022,15 +929,7 @@ def cmd_reset(
         no_backup: bool = False,
         yes: bool = False,
 ) -> int:
-    """Сбросить эталон, state и лог с бэкапом.
-
-    Начало с чистого листа. Модели и карантин не трогаются.
-
-    Args:
-        no_backup: без бэкапа (опасно)
-        yes: без подтверждения
-    """
-    # 1. Подтверждение
+    """Сбросить эталон, state и лог с бэкапом."""
     if not yes:
         print()
         print("⚠️  СБРОС:")
@@ -1053,7 +952,6 @@ def cmd_reset(
             print("Отменено")
             return 0
 
-    # 2. Бэкап
     backups_dir = config.data_dir / "backups"
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     backup_paths = []
@@ -1061,44 +959,36 @@ def cmd_reset(
     if not no_backup:
         backups_dir.mkdir(parents=True, exist_ok=True)
 
-        # Эталон
         if config.etalon_path.exists():
             bak = backups_dir / f"model_hashes.json.{timestamp}.bak"
             shutil.copy2(config.etalon_path, bak)
             backup_paths.append(bak)
 
-        # State
         if config.state_path.exists():
             bak = backups_dir / f"models_state.json.{timestamp}.bak"
             shutil.copy2(config.state_path, bak)
             backup_paths.append(bak)
 
-        # Лог
         if config.log_path.exists():
             bak = backups_dir / f"audit_log.jsonl.{timestamp}.bak"
             shutil.copy2(config.log_path, bak)
             backup_paths.append(bak)
 
-    # 3. Сброс эталона
     save_hashes_signed({}, config.etalon_path, key)
     print(f"✅ Эталон сброшен: {config.etalon_path}")
 
-    # 4. Сброс state
     save_state({}, config.state_path)
     print(f"✅ State сброшен: {config.state_path}")
 
-    # 5. Сброс лога
     if config.log_path.exists():
         config.log_path.unlink()
     config.log_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"✅ Лог сброшен: {config.log_path}")
 
-    # 6. Логируем reset в новый лог
     logger.info("reset_completed", extra={"extra_data": {
         "backups": [str(b) for b in backup_paths],
     }})
 
-    # 7. Вывод бэкапов
     if backup_paths:
         print()
         print("Бэкапы:")
@@ -1107,6 +997,8 @@ def cmd_reset(
 
     return 0
 
+
+# ─── Печать (inspect, list, report) ─────────────────────
 
 def _print_inspect_table(results: list):
     for i, file_res in enumerate(results):
@@ -1123,10 +1015,9 @@ def _print_inspect_table(results: list):
 
 
 def _print_details(details: dict):
-    """Рекурсивно печатает details."""
     for k, v in details.items():
         if k == "error":
-            continue  # error уже в message
+            continue
 
         if k == "dangerous" and isinstance(v, list):
             if not v:
@@ -1211,7 +1102,6 @@ def _print_inspect_json(results: list):
 
 
 def _print_last_audit(audit: dict) -> None:
-    """Печатает последний audit-отчёт из лога."""
     line = "=" * 55
     print(line)
     print("ПОСЛЕДНИЙ АУДИТ".center(55))
@@ -1267,17 +1157,12 @@ def _print_last_audit(audit: dict) -> None:
 
 
 def compute_checks_status(state_entry: dict | None, file_size: int) -> dict:
-    """Возвращает {check_name: status} для одного файла.
-
-    Statuses: "pass" | "fail" | "warn" | "skip" | "stale" | "unknown"
-    """
     if state_entry is None:
-        return {}  # нет данных — колонок не будет
+        return {}
 
     checks = state_entry.get("checks", {})
     result = {}
 
-    # Если размер изменился — все проверки устарели
     if state_entry.get("size") != file_size:
         for name in checks:
             result[name] = "stale"
@@ -1297,7 +1182,6 @@ STATUS_LABELS = {
     "unknown": "[dim][?][/dim]",
 }
 
-
 REGISTRY_LABELS = {
     "verified": "[green][OK][/green]",
     "modified": "[yellow][!][/yellow]",
@@ -1309,11 +1193,22 @@ IN_ETALON_LABELS = {
     False: "[dim][-][/dim]",
 }
 
-
 PRESENCE_LABELS = {
     True:  "[green][+][/green]",
     False: "[dim][-][/dim]",
 }
+
+
+def _format_duration_ms(ms: int) -> str:
+    """Форматирует миллисекунды в читаемый вид: 0.1s, 1.2s, 1m 5s."""
+    if not ms:
+        return "—"
+    sec = ms / 1000
+    if sec < 60:
+        return f"{sec:.1f}s"
+    m = int(sec // 60)
+    s = int(sec % 60)
+    return f"{m}m {s}s"
 
 
 def _print_list_table(models_dir, models, summary):
@@ -1325,7 +1220,6 @@ def _print_list_table(models_dir, models, summary):
         console.print("[yellow]Реестр пуст. Запусти init или audit.[/yellow]")
         return
 
-    # Собираем все check_names
     all_checks = set()
     for m in models:
         all_checks.update(m["checks"].keys())
@@ -1339,6 +1233,7 @@ def _print_list_table(models_dir, models, summary):
     table.add_column("Эталон", justify="center")
     for name in check_names:
         table.add_column(name, justify="center")
+    table.add_column("Time", justify="right")
     table.add_column("Последняя проверка", justify="right")
 
     for i, m in enumerate(models, 1):
@@ -1352,12 +1247,12 @@ def _print_list_table(models_dir, models, summary):
         for name in check_names:
             status = m["checks"].get(name, "unknown")
             row.append(STATUS_LABELS.get(status, status))
+        row.append(_format_duration_ms(m.get("file_duration_ms", 0)))
         row.append(_format_last_audit(m.get("last_audit")))
         table.add_row(*row)
 
     console.print(table)
 
-    # Сводка
     console.print(
         f"\nИтого: {summary['total']} записей, "
         f"{summary['present']} на диске, {summary['absent']} отсутствуют"
@@ -1369,8 +1264,6 @@ def _print_list_table(models_dir, models, summary):
         )
 
     tips = []
-
-    # Есть stale в checks
     has_stale = any(
         "stale" in m["checks"].values()
         for m in models
@@ -1378,12 +1271,10 @@ def _print_list_table(models_dir, models, summary):
     if has_stale:
         tips.append("Есть устаревшие записи — запусти: auditllm audit")
 
-    # Есть не в эталоне
     if summary.get("not_in_etalon", 0) > 0:
         tips.append("Добавь проверенные в эталон: auditllm promote (без пересканирования)")
 
     _print_tips(tips)
-
 
 
 def _print_list_json(models_dir, models, summary):
@@ -1396,7 +1287,6 @@ def _print_list_json(models_dir, models, summary):
 
 
 def _print_tips(tips: list[str]) -> None:
-    """Печатает подсказки."""
     if not tips:
         return
     print()
@@ -1437,7 +1327,6 @@ def _print_inbox_table(models_dir, models, summary):
 
     console.print(table)
 
-    # Сводка
     parts = []
     if summary["verified"]:
         parts.append(f"{summary['verified']} проверено")
@@ -1451,7 +1340,6 @@ def _print_inbox_table(models_dir, models, summary):
     etalon_info = f"В эталоне: {summary['in_etalon']}, не в эталоне: {summary['not_in_etalon']}"
     console.print(f"[dim]{etalon_info}[/dim]")
 
-    # Подсказки
     tips = []
     if summary["new"] > 0 and summary["not_in_etalon"] > 0:
         tips.append("Проверь новые: auditllm audit --new-only")
@@ -1490,6 +1378,7 @@ def _format_last_audit(iso_str: str | None) -> str:
         return str(iso_str)
 
 
+# ─── run_checks ─────────────────────────────────────────
 
 def run_checks(
     models_dir: Path,
@@ -1566,10 +1455,8 @@ def extract_hash_size(results: dict) -> dict:
             continue
         details = hash_res.details
         if "hash" in details and "size" in details:
-            # pass / warn
             flat[path] = {"hash": details["hash"], "size": details["size"]}
         elif "actual" in details:
-            # fail: берём actual
             flat[path] = {
                 "hash": details["actual"].get("hash"),
                 "size": details["actual"].get("size"),
@@ -1578,14 +1465,6 @@ def extract_hash_size(results: dict) -> dict:
 
 
 def _aggregate_checks(results: dict) -> dict:
-    """
-    Returns:
-        {
-            "hash": {"pass": 6, "fail": 0, "warn": 0, "skip": 0},
-            "header": {"pass": 1, "fail": 3, "warn": 0, "skip": 2},
-            "pickle": {"pass": 0, "fail": 1, "warn": 1, "skip": 4},
-        }
-    """
     agg = {}
     for path, checks_res in results.items():
         for check_name, check_res in checks_res.items():
@@ -1596,12 +1475,6 @@ def _aggregate_checks(results: dict) -> dict:
 
 
 def _collect_issues(results: dict) -> tuple[dict, dict]:
-    """
-    Returns:
-        (failures, warnings)
-        failures = {"pickle": [{"path": "evil.pt", "message": "..."}], ...}
-        warnings = {"pickle": [{"path": "safe.pt", "message": "..."}], ...}
-    """
     failures = {}
     warnings = {}
     for path, checks_res in results.items():
@@ -1634,6 +1507,8 @@ def _resolve_path(path: Path, models_dir: Path) -> Path | None:
                 return matches[0]
     return None
 
+
+# ─── Trust (для cli.py) ─────────────────────────────────
 
 def _print_trust_table(result):
     print()
@@ -1668,7 +1543,6 @@ def _print_trust_table(result):
     label = {"pass": "✅ TRUSTED", "warn": "⚠️  CAUTION", "fail": "🚨 LOW TRUST"}[status]
     print(f"  {label}")
     print()
-
 
 
 def _print_trust_json(result):
@@ -1712,6 +1586,8 @@ def _print_report_table(results: list) -> None:
         print(f"   Present: {present_str}{stale_str}")
         last_audit = _format_last_audit(file_res.get("last_audit"))
         print(f"   Last audit: {last_audit}")
+        duration = _format_duration_ms(file_res.get("file_duration_ms", 0))
+        print(f"   Time: {duration}")
         print()
 
         for check_name, check_res in file_res.get("checks", {}).items():
@@ -1725,6 +1601,7 @@ def _print_report_table(results: list) -> None:
                 _print_details(details)
             print()
 
+
 def _print_report_json(results: list, state: dict) -> None:
     """JSON-вывод."""
     output = {
@@ -1737,8 +1614,4 @@ def _print_report_json(results: list, state: dict) -> None:
 
 
 
-
-
-
-
-
+    
