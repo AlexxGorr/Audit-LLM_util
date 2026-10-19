@@ -11,6 +11,12 @@ if TYPE_CHECKING:
     from auditllm.progress import ProgressReporter
 
 
+GGUF_VALUE_SIZES = {
+    0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1,
+    10: 8, 11: 8, 12: 8,
+}
+
+
 class HeaderCheck(Check):
     name = "header"
     description = "Model header validation (GGUF, safetensors)"
@@ -43,7 +49,6 @@ class HeaderCheck(Check):
                 duration_ms=int((time.monotonic() - start) * 1000),
             )
 
-        # Проверка sanity: если что-то не так — warn, не pass
         sanity = details.get("sanity", {})
         failed_sanity = [k for k, v in sanity.items() if not v]
 
@@ -63,8 +68,7 @@ class HeaderCheck(Check):
         )
 
     def _check_gguf(self, file_path: Path) -> dict:
-        """Читает заголовок и метаданные GGUF."""
-        # 1. Быстрая проверка magic (как было)
+        """Читает заголовок и ключевые метаданные GGUF (быстро)."""
         with open(file_path, "rb") as f:
             header = f.read(24)
         if len(header) < 24:
@@ -75,12 +79,7 @@ class HeaderCheck(Check):
 
         version, tensor_count, metadata_kv_count = struct.unpack("<IQQ", header[4:24])
 
-        # 2. Sanity checks
         KNOWN_VERSIONS = {1, 2, 3}
-        version_known = version in KNOWN_VERSIONS
-        tensor_count_ok = 1 <= tensor_count <= 100_000
-        metadata_kv_ok = 0 <= metadata_kv_count <= 100_000
-
         result = {
             "format": "GGUF",
             "version": version,
@@ -88,128 +87,125 @@ class HeaderCheck(Check):
             "tensor_count": tensor_count,
             "metadata_kv_count": metadata_kv_count,
             "sanity": {
-                "version_known": version_known,
-                "tensor_count_ok": tensor_count_ok,
-                "metadata_kv_ok": metadata_kv_ok,
+                "version_known": version in KNOWN_VERSIONS,
+                "tensor_count_ok": 1 <= tensor_count <= 100_000,
+                "metadata_kv_ok": 0 <= metadata_kv_count <= 100_000,
             },
         }
 
-        # 3. Читаем метаданные через gguf (опционально)
-        try:
-            from gguf import GGUFReader
-            reader = GGUFReader(str(file_path))
-
-            # Извлекаем ключевые поля
-            metadata = self._extract_gguf_metadata(reader)
-            if metadata:
-                result["metadata"] = metadata
-        except ImportError:
-            result["metadata_error"] = "gguf library not installed"
-        except Exception as e:
-            result["metadata_error"] = str(e)
+        metadata = self._read_gguf_metadata_fast(file_path, max_pairs=50)
+        if metadata:
+            result["metadata"] = metadata
 
         return result
 
-    def _extract_gguf_metadata(self, reader) -> dict:
-        """Извлекает ключевые метаданные из GGUFReader.
-
-        Динамически определяет архитектуру и извлекает поля <arch>.*
-        """
+    def _read_gguf_metadata_fast(self, file_path: Path, max_pairs: int = 50) -> dict:
+        """Ручной парсер ключевых метаданных GGUF."""
         metadata = {}
+        KEY_PREFIXES = (
+            "general.", "llama.", "phi3.", "qwen2.", "mistral.",
+            "gemma.", "bert.", "falcon.", "mpt.", "starcoder.",
+        )
 
-        # 1. Общие поля (general.*)
-        GENERAL_FIELDS = {
-            "general.architecture": "architecture",
-            "general.name": "name",
-            "general.author": "author",
-            "general.license": "license",
-            "general.description": "description",
-            "general.file_type": "file_type",
-            "general.basename": "basename",
-            "general.size_label": "size_label",
-            "general.quantization_version": "quantization_version",
-        }
+        try:
+            with open(file_path, "rb") as f:
+                f.seek(24)
 
-        # 2. Определяем архитектуру (для динамического поиска <arch>.*)
-        architecture = None
-        if "general.architecture" in reader.fields:
-            field_obj = reader.fields["general.architecture"]
-            arch_value = self._gguf_value_to_python(field_obj)
-            if arch_value:
-                architecture = arch_value
-                metadata["architecture"] = arch_value
+                for _ in range(max_pairs):
+                    key_len_bytes = f.read(8)
+                    if len(key_len_bytes) < 8:
+                        break
+                    key_len = struct.unpack("<Q", key_len_bytes)[0]
+                    if key_len > 1000:
+                        break
 
-        # 3. Извлекаем общие поля
-        for field_name, short_name in GENERAL_FIELDS.items():
-            if field_name == "general.architecture":
-                continue  # уже извлекли
-            if field_name in reader.fields:
-                value = self._gguf_value_to_python(reader.fields[field_name])
-                if value is not None:
-                    metadata[short_name] = value
+                    key_bytes = f.read(key_len)
+                    if len(key_bytes) < key_len:
+                        break
+                    key = key_bytes.decode("utf-8", errors="replace")
 
-        # 4. Извлекаем архитектурно-специфичные поля: <arch>.context_length и т.д.
-        if architecture:
-            ARCH_FIELDS = [
-                "context_length",
-                "embedding_length",
-                "block_count",
-                "feed_forward_length",
-                "attention.head_count",
-                "attention.head_count_kv",
-                "attention.layer_norm_rms_epsilon",
-                "rope.freq_base",
-                "vocab_size",
-            ]
+                    type_bytes = f.read(4)
+                    if len(type_bytes) < 4:
+                        break
+                    value_type = struct.unpack("<I", type_bytes)[0]
 
-            for arch_field in ARCH_FIELDS:
-                full_name = f"{architecture}.{arch_field}"
-                if full_name in reader.fields:
-                    value = self._gguf_value_to_python(reader.fields[full_name])
-                    if value is not None:
-                        metadata[arch_field] = value
+                    value = self._read_gguf_value(f, value_type)
+                    if value is _SENTINEL_ERROR:
+                        break
+
+                    if any(key.startswith(p) for p in KEY_PREFIXES) and value is not None:
+                        short_name = key.split(".", 1)[1] if "." in key else key
+                        metadata[short_name] = value
+        except Exception:
+            return metadata
 
         return metadata
 
-    def _gguf_value_to_python(self, field_obj):
-        """Конвертирует значение поля GGUF в Python.
-
-        Структура parts (GGUFReader):
-        - parts[0] — длина ключа
-        - parts[1] — байты ключа
-        - parts[2] — тип значения (uint32)
-        - parts[3] — длина значения (uint64) — опционально
-        - parts[-1] — само значение
-
-        Значение всегда в parts[-1].
-        """
+    def _read_gguf_value(self, f, value_type: int):
+        """Читает значение KV-пары. Возвращает значение или None (пропуск)."""
         try:
-            if not hasattr(field_obj, "parts") or not field_obj.parts:
+            if value_type == 8:  # string
+                len_bytes = f.read(8)
+                if len(len_bytes) < 8:
+                    return _SENTINEL_ERROR
+                str_len = struct.unpack("<Q", len_bytes)[0]
+                if str_len > 1_000_000:
+                    return _SENTINEL_ERROR
+                data = f.read(str_len)
+                if len(data) < str_len:
+                    return _SENTINEL_ERROR
+                return data.decode("utf-8", errors="replace")
+
+            elif value_type == 9:  # array
+                inner_bytes = f.read(4)
+                if len(inner_bytes) < 4:
+                    return _SENTINEL_ERROR
+                inner_type = struct.unpack("<I", inner_bytes)[0]
+
+                len_bytes = f.read(8)
+                if len(len_bytes) < 8:
+                    return _SENTINEL_ERROR
+                arr_len = struct.unpack("<Q", len_bytes)[0]
+                if arr_len > 1_000_000:
+                    return _SENTINEL_ERROR
+
+                if inner_type == 8:
+                    for _ in range(arr_len):
+                        slen_bytes = f.read(8)
+                        if len(slen_bytes) < 8:
+                            return _SENTINEL_ERROR
+                        slen = struct.unpack("<Q", slen_bytes)[0]
+                        f.seek(slen, 1)
+                else:
+                    size = GGUF_VALUE_SIZES.get(inner_type, 0)
+                    if size == 0:
+                        return _SENTINEL_ERROR
+                    f.seek(arr_len * size, 1)
+
                 return None
 
-            value_part = field_obj.parts[-1]
+            else:
+                size = GGUF_VALUE_SIZES.get(value_type, 0)
+                if size == 0:
+                    return _SENTINEL_ERROR
+                data = f.read(size)
+                if len(data) < size:
+                    return _SENTINEL_ERROR
 
-            # Строка: dtype uint8
-            if hasattr(value_part, "dtype") and value_part.dtype == "uint8":
-                try:
-                    raw = value_part.tobytes().rstrip(b"\x00")
-                    decoded = raw.decode("utf-8")
-                    if decoded.isprintable():
-                        return decoded
-                except (UnicodeDecodeError, AttributeError):
-                    pass
-
-            # Число/массив: tolist()
-            if hasattr(value_part, "tolist"):
-                value = value_part.tolist()
-                if isinstance(value, list) and len(value) == 1:
-                    return value[0]
-                return value
-
-            return None
+                if value_type in (0, 2, 4, 10):
+                    fmt = {0: "B", 2: "H", 4: "I", 10: "Q"}[value_type]
+                    return struct.unpack(f"<{fmt}", data)[0]
+                elif value_type in (1, 3, 5, 11):
+                    fmt = {1: "b", 3: "h", 5: "i", 11: "q"}[value_type]
+                    return struct.unpack(f"<{fmt}", data)[0]
+                elif value_type == 6:
+                    return struct.unpack("<f", data)[0]
+                elif value_type == 12:
+                    return struct.unpack("<d", data)[0]
+                elif value_type == 7:
+                    return bool(data[0])
         except Exception:
-            return None
-
+            return _SENTINEL_ERROR
 
     def _check_safetensors(self, file_path: Path) -> dict:
         """Читает длину и JSON-заголовок safetensors."""
@@ -232,11 +228,9 @@ class HeaderCheck(Check):
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON header: {e}")
 
-        # Метаданные и тензоры
         metadata = header_data.get("__metadata__", {})
         tensor_names = [k for k in header_data.keys() if k != "__metadata__"]
 
-        # Распределение по dtype
         dtype_distribution: dict[str, int] = {}
         for name in tensor_names:
             entry = header_data.get(name, {})
@@ -244,7 +238,6 @@ class HeaderCheck(Check):
                 dtype = entry.get("dtype", "unknown")
                 dtype_distribution[dtype] = dtype_distribution.get(dtype, 0) + 1
 
-        # Первые 5 тензоров (для контекста)
         sample_tensors = sorted(tensor_names)[:5]
 
         return {
@@ -257,9 +250,7 @@ class HeaderCheck(Check):
         }
 
 
-
-
-
+_SENTINEL_ERROR = object()
 
 
 
