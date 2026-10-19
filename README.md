@@ -1,20 +1,28 @@
-Аудит локальных LLM: проверка целостности и безопасности файлов моделей.
+Аудит локальных LLM: проверка целостности, формата и безопасности файлов моделей.
 
 ## Что это
 
 `audit-llm` — CLI-инструмент для проверки локальных LLM-моделей на:
 
-- **Целостность** — не изменился ли файл с момента последней проверки
-- **Формат** — валиден ли заголовок (GGUF, safetensors)
+- **Целостность** — не изменился ли файл с момента последней проверки (SHA-256 + HMAC-подписанный эталон)
+- **Формат** — валиден ли заголовок (GGUF, safetensors) + метаданные модели
 - **Безопасность** — нет ли опасного pickle-кода (для `.pt`/`.pth`/`.bin`)
 
 ## Возможности
 
 - SHA-256 хеширование с эталоном, подписанным HMAC
-- Проверка заголовков GGUF и safetensors (magic bytes, метаданные)
-- Статический анализ pickle без выполнения (blocklist опасных модулей)
+- Проверка заголовков GGUF (architecture, context_length, quantization, license) и safetensors
+- Статический анализ pickle без выполнения (blocklist опасных модулей, REDUCE, STACK_GLOBAL)
 - Карантин подозрительных файлов с метаданными
-- Прогресс-бар, JSON-вывод, коды возврата для CI/CD
+- Прогресс-бар с elapsed-временем и скоростью
+- Per-file duration: сколько времени ушло на каждую модель
+- JSON-вывод для CI/CD
+- Коды возврата для автоматизации
+- **Инкрементальный аудит**: `--new-only` — только новые файлы
+- **Promote**: добавить проверенные файлы в эталон без пересканирования
+- **Report**: последний audit из лога / детали конкретного файла из state
+- **Reset**: сброс эталона, state и лога с бэкапом
+- **Trust**: проверка репутации HF-репозитория
 - Расширяемая архитектура через абстракцию `Check`
 
 ## Установка
@@ -31,7 +39,7 @@ pip install -e .
 
 ## Настройка
 
-Создать `.env` в корне:
+Создать `.env` в корне проекта:
 
 ```
 AUDIT_SECRET_KEY=your-super-secret-key-at-least-32-chars
@@ -46,101 +54,182 @@ data_dir = "/var/lib/audit-llm"
 quarantine_dir = "/var/lib/audit-llm/quarantine"
 ```
 
-## Использование
+**Приоритеты:** CLI-флаги > `config.toml` > дефолты (внутри проекта).
+
+## Быстрый старт
 
 ```bash
-# Первый запуск — создать эталон
+# 1. Положить модели в models/
+cp model.gguf models/
+
+# 2. Создать эталон (HMAC-подписанный)
 auditllm init
 
-# Аудит
+# 3. Проверить
 auditllm audit
 
-# Список моделей
+# 4. Посмотреть реестр
 auditllm list
 
-# Только конкретные проверки
-auditllm audit --check hash --check header
+# 5. Инкрементальный аудит (только новые)
+auditllm audit --new-only
+auditllm promote   # добавить проверенные в эталон
 ```
 
 ## CLI
 
-| Команда | Описание |
-|---------|----------|
-| `auditllm init` | Создать эталон (хеши всех моделей) |
-| `auditllm audit` | Проверить модели против эталона |
-| `auditllm list` | Показать статус моделей |
-| `auditllm report` | (TODO) Последний отчёт |
-| `auditllm shell` | (TODO) Интерактивная оболочка |
+### `init` — создать эталон
 
-**Общие флаги:**
+```bash
+auditllm init
+auditllm init --models-dir /mnt/data/models --data-dir /var/lib/audit-llm
+```
 
-- `--config PATH` — путь к config.toml
-- `--models-dir PATH` — переопределить папку моделей
-- `--data-dir PATH` — переопределить папку данных
-- `--quarantine-dir PATH` — переопределить карантин
-- `-v, --verbose` — подробный вывод
-- `--no-progress` — отключить прогресс-бар
+### `audit` — проверить модели
 
-**Флаги `audit`:**
+```bash
+auditllm audit                              # полная проверка
+auditllm audit --new-only                    # только новые файлы
+auditllm audit --new-only --update-etalon    # проверить + добавить в эталон
+auditllm audit --check hash --check header  # только конкретные проверки
+auditllm audit --no-quarantine               # не перемещать в карантин
+auditllm audit --no-progress                 # без прогресс-бара
+```
 
-- `--update-etalon` — обновить эталон (added/removed, не modified)
-- `--no-quarantine` — не перемещать подозрительные файлы
-- `--check NAME` — выбрать проверки
+**Коды возврата:** `0` — чисто, `1` — added/removed, `2` — modified/fail проверок.
 
-## Коды возврата
+### `list` — реестр проверенных моделей
 
-| Код | Значение |
-|-----|----------|
-| 0 | Всё чисто |
-| 1 | Есть отличия (added/removed), но не критично |
-| 2 | Критичные проблемы (modified, fail проверок) |
-| 130 | Отменено пользователем (Ctrl+C) |
+```bash
+auditllm list
+auditllm list --json
+```
+
+Показывает: имя, размер, наличие на диске, в эталоне ли, статусы проверок, **Time** (сколько ушло на файл), дата последней проверки.
+
+### `inbox` — что лежит в папке сейчас
+
+```bash
+auditllm inbox
+auditllm inbox --new-only    # только непроверенные
+auditllm inbox --json
+```
+
+Показывает: имя, размер, статус в реестре, в эталоне ли. Внизу — подсказки, что делать дальше.
+
+### `inspect` — просмотр без сохранения
+
+```bash
+auditllm inspect model.gguf              # быстрые проверки (header + pickle)
+auditllm inspect model.gguf --show hash  # + hash (медленно)
+auditllm inspect --all                    # все файлы в папке
+auditllm inspect model.gguf --json
+```
+
+**GGUF metadata:** architecture, context_length, embedding_length, block_count, quantization, license, rope.freq_base, head_count_kv и др.
+
+### `promote` — из state в эталон (без сканирования)
+
+```bash
+auditllm promote                       # добавить все pass/warn из state
+auditllm promote model.gguf            # конкретный файл
+auditllm promote model.gguf --force    # даже с fail
+auditllm promote --dry-run             # показать, не менять
+```
+
+**Мгновенно** — не сканирует файлы. После `promote` → `hash = [OK]` в `list`.
+
+### `report` — последний audit / детали файла
+
+```bash
+auditllm report                       # последний audit из лога (diff)
+auditllm report model.gguf            # детали из state (мгновенно)
+auditllm report model.gguf --json
+```
+
+### `reset` — сброс с бэкапом
+
+```bash
+auditllm reset              # интерактивное подтверждение (введи 'yes')
+auditllm reset --yes        # без подтверждения
+auditllm reset --no-backup  # без бэкапа (опасно)
+```
+
+**Сбрасывает:** эталон, state, лог. **Бэкапы** — в `data/backups/`.  
+**НЕ трогает:** модели, карантин, config, `.env`.
+
+### `trust` — репутация HF-репозитория
+
+```bash
+auditllm trust meta-llama/Llama-2-7b
+auditllm trust meta-llama/Llama-2-7b --json
+```
+
+Проверяет: author (официальный?), downloads, likes, license, model card, gated.  
+Возвращает trust score 0–100.
 
 ## Проверки
 
 ### `hash` — SHA-256
 
-Считает хеш файла, сравнивает с эталоном. Определяет `size_mismatch` / `hash_mismatch`.
+Сравнивает хеш файла с эталоном. Определяет `size_mismatch` / `hash_mismatch`.  
+По умолчанию включён в `audit`, выключен в `inspect` (медленно — читает весь файл).
 
-### `header` — заголовок
+### `header` — заголовок модели
 
-Для `.gguf` — magic bytes `GGUF`, версия, tensor_count, metadata_kv_count.
-Для `.safetensors` — JSON-заголовок, список тензоров.
+**GGUF:** magic `GGUF`, version, tensor_count, metadata_kv_count + метаданные (architecture, context_length, ...).  
+**safetensors:** JSON-заголовок, tensor_count, dtype_distribution, sample_tensors.
 
 ### `pickle` — безопасность pickle
 
-Для `.pkl`/`.pt`/`.pth`/`.bin` — статический анализ через `pickletools.genops`.
-Ищет опасные импорты (`os`, `subprocess`, `builtins`, ...) через blocklist.
-**Всегда возвращает `warn` или `fail`, никогда `pass`** — pickle принципиально небезопасен.
+Для `.pkl`/`.pt`/`.pth`/`.bin` — статический анализ через `pickletools.genops`.  
+Ищет: опасные модули (`os`, `subprocess`, `builtins`, ...), REDUCE (callable), STACK_GLOBAL (динамический импорт).  
+**Всегда `warn` или `fail`** — pickle принципиально небезопасен.
+
+## Коды возврата
+
+| Код | Значение |
+|-----|----------|
+| `0` | Всё чисто |
+| `1` | Есть отличия (added/removed), не критично |
+| `2` | Критично (modified, fail проверок, подпись эталона) |
+| `130` | Отменено пользователем (Ctrl+C) |
 
 ## Архитектура
 
 ```
 audit_llm/
-├── auditllm/
-│   ├── cli.py              # typer-команды
-│   ├── config.py           # Config, load_config, load_secret_key
-│   ├── core.py             # run_checks, cmd_*, print_report
-│   ├── state.py            # models_state.json
-│   ├── logging_setup.py    # JSON-логи с ротацией
-│   ├── progress.py         # ProgressReporter
-│   ├── hashing.py          # get_file_hash
-│   ├── integrity.py        # HMAC-подпись эталона
-│   ├── quarantine.py       # изоляция файлов
-│   ├── scanner.py          # find_model_files
-│   ├── utils.py            # format_size
-│   └── checks/
-│       ├── base.py         # Check, CheckResult
-│       ├── hash_check.py   # HashCheck
-│       ├── header_check.py # HeaderCheck
-│       ├── pickle_check.py # PickleCheck
-│       └── __init__.py     # REGISTRY
 ├── pyproject.toml
 ├── .env                    # AUDIT_SECRET_KEY (не в git)
 ├── .gitignore
-├── data/                   # эталон, логи, state
+├── config.toml.example
+├── data/
+│   ├── model_hashes.json   # подписанный эталон
+│   ├── models_state.json   # результаты последнего аудита
+│   ├── audit_log.jsonl     # лог с ротацией
+│   └── backups/            # бэкапы после reset
 ├── models/                 # модели (можно переопределить)
-└── quarantine/             # карантин
+├── quarantine/             # карантин
+└── auditllm/
+    ├── cli.py              # typer-команды
+    ├── config.py           # Config, load_config, load_secret_key
+    ├── core.py             # run_checks, cmd_*, print_report
+    ├── state.py            # models_state.json
+    ├── report.py           # read_last_audit (из лога)
+    ├── logging_setup.py    # JSON-логи с ротацией
+    ├── progress.py         # ProgressReporter (elapsed, speed)
+    ├── spinner.py          # Spinner для inspect
+    ├── hashing.py          # get_file_hash
+    ├── integrity.py        # HMAC-подпись эталона
+    ├── quarantine.py       # изоляция файлов
+    ├── scanner.py          # find_model_files
+    ├── utils.py            # format_size
+    └── checks/
+        ├── base.py         # Check, CheckResult
+        ├── hash_check.py   # HashCheck
+        ├── header_check.py # HeaderCheck (GGUF + safetensors)
+        ├── pickle_check.py # PickleCheck
+        └── __init__.py     # REGISTRY, get_checks
 ```
 
 ## Как добавить новую проверку
@@ -179,3 +268,4 @@ REGISTRY = {
 ## Лицензия
 
 MIT
+```
