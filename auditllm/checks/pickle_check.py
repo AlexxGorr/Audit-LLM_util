@@ -21,23 +21,63 @@ class PickleCheck(Check):
 
     # Опасные модули (blocklist — НЕ полный!)
     DANGEROUS_CATEGORIES = {
+        # System calls
         "os": "system calls",
         "posix": "system calls",
         "nt": "system calls",
         "subprocess": "process spawn",
-        "sys": "interpreter internals",
+        "commands": "shell commands",
+        "popen2": "process spawn",
+
+        # Code execution
         "builtins": "arbitrary eval/exec",
         "__builtin__": "arbitrary eval/exec",
-        "shutil": "file manipulation",
-        "socket": "network access",
-        "pty": "terminal control",
+        "eval": "arbitrary eval",
+        "exec": "arbitrary exec",
         "runpy": "code execution",
         "importlib": "dynamic import",
         "code": "interactive interpreter",
         "codeop": "code compilation",
-        "commands": "shell commands",
-        "popen2": "process spawn",
+        "compile": "code compilation",
+        "compileall": "code compilation",
+
+        # Network
+        "socket": "network access",
+        "urllib": "network access",
+        "http": "network access",
+        "ftplib": "network access",
+        "telnetlib": "network access",
+        "smtplib": "network access",
+        "requests": "network access",
+
+        # File system
+        "shutil": "file manipulation",
+        "fileinput": "file manipulation",
+        "tempfile": "file manipulation",
+        "pathlib": "file manipulation",
+        "glob": "file manipulation",
+
+        # Process/terminal
+        "pty": "terminal control",
+        "tty": "terminal control",
+        "termios": "terminal control",
         "platform": "system info",
+        "sys": "interpreter internals",
+        "gc": "interpreter internals",
+
+        # Serialization (может рекурсивно)
+        "pickle": "recursive pickle",
+        "dill": "recursive pickle",
+        "joblib": "recursive pickle",
+
+        # Misc dangerous
+        "webbrowser": "browser control",
+        "ctypes": "native code",
+        "cffi": "native code",
+        "multiprocessing": "process spawn",
+        "threading": "thread manipulation",
+        "signal": "signal manipulation",
+        "resource": "resource manipulation",
     }
 
     # Pickle magic byte (protocol 2+)
@@ -83,6 +123,7 @@ class PickleCheck(Check):
                     "warnings": warnings,
                     "reduce_count": findings.get("reduce_count", 0),
                     "inner_files": findings.get("inner_files", []),
+                    "disassembly": findings.get("disassembly", []),
                 },
                 duration_ms=duration_ms,
             )
@@ -120,7 +161,7 @@ class PickleCheck(Check):
             return self._scan_pickle_stream(f)
 
     def _scan_pickle_stream(self, f) -> dict:
-        result = {"dangerous": [], "warnings": [], "reduce_count": 0}
+        result = {"dangerous": [], "warnings": [], "reduce_count": 0, "disassembly": []}
 
         string_stack: list[str] = []
         STRING_OPCODES = {
@@ -131,6 +172,14 @@ class PickleCheck(Check):
         try:
             for opcode, arg, pos in pickletools.genops(f):
                 name = opcode.name
+
+                # Добавить в disassembly
+                arg_repr = repr(arg) if arg is not None else ""
+                result["disassembly"].append({
+                    "pos": pos,
+                    "opcode": name,
+                    "arg": arg_repr[:80],  # обрезать длинные
+                })
 
                 if name in STRING_OPCODES and isinstance(arg, str):
                     string_stack.append(arg)

@@ -1046,6 +1046,18 @@ def _print_details(details: dict):
                     print(f"       - {prefix}{msg}")
                 else:
                     print(f"       - {w}")
+        elif k == "disassembly" and isinstance(v, list):
+            if not v:
+                continue
+            print(f"     disassembly:")
+            for item in v[:30]:  # первые 30 opcodes
+                pos = item.get("pos", "?")
+                opcode = item.get("opcode", "?")
+                arg = item.get("arg", "")
+                arg_str = f" {arg}" if arg else ""
+                print(f"       {pos:>4}: {opcode:<20}{arg_str}")
+            if len(v) > 30:
+                print(f"       ... ({len(v) - 30} more)")
 
         elif isinstance(v, dict):
             if not v:
@@ -1062,7 +1074,6 @@ def _print_details(details: dict):
                 print(f"       - {item}")
             if len(v) > 10:
                 print(f"       ... ({len(v) - 10} more)")
-
         else:
             print(f"     {k}: {v}")
 
