@@ -88,8 +88,8 @@ class PickleCheck(Check):
 
     def run(self,
             file_path: Path,
-            context: dict[Any, Any] | None=None,
-            progress: ProgressReporter | None=None) -> CheckResult:
+            context: dict[Any, Any] | None = None,
+            progress: ProgressReporter | None = None) -> CheckResult:
         start = time.monotonic()
 
         try:
@@ -113,6 +113,9 @@ class PickleCheck(Check):
 
         dangerous = findings.get("dangerous", [])
         warnings = findings.get("warnings", [])
+        reduce_count = findings.get("reduce_count", 0)
+        inner_files = findings.get("inner_files", [])
+        disassembly = findings.get("disassembly", [])
 
         if dangerous:
             return CheckResult(
@@ -121,9 +124,9 @@ class PickleCheck(Check):
                 details={
                     "dangerous": dangerous,
                     "warnings": warnings,
-                    "reduce_count": findings.get("reduce_count", 0),
-                    "inner_files": findings.get("inner_files", []),
-                    "disassembly": findings.get("disassembly", []),
+                    "reduce_count": reduce_count,
+                    "inner_files": inner_files,
+                    "disassembly": disassembly,
                 },
                 duration_ms=duration_ms,
             )
@@ -132,14 +135,24 @@ class PickleCheck(Check):
             return CheckResult(
                 status="warn",
                 message=f"Pickle parsed, {len(warnings)} warnings (but pickle is never fully safe)",
-                details={"warnings": warnings},
+                details={
+                    "warnings": warnings,
+                    "reduce_count": reduce_count,
+                    "inner_files": inner_files,
+                    "disassembly": disassembly,
+                },
                 duration_ms=duration_ms,
             )
 
         return CheckResult(
             status="warn",
             message="Pickle parsed, no known dangerous globals (pickle is never fully safe)",
-            details={"note": "Static scan is best-effort."},
+            details={
+                "note": "Static scan is best-effort.",
+                "reduce_count": reduce_count,
+                "inner_files": inner_files,
+                "disassembly": disassembly,
+            },
             duration_ms=duration_ms,
         )
 
