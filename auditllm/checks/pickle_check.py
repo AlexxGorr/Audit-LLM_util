@@ -250,7 +250,7 @@ class PickleCheck(Check):
         return result
 
     def _scan_zip(self, file_path: Path) -> dict:
-        result = {"dangerous": [], "warnings": [], "reduce_count": 0, "inner_files": []}
+        result = {"dangerous": [], "warnings": [], "reduce_count": 0, "inner_files": [], "disassembly": []}
 
         with zipfile.ZipFile(file_path, "r") as zf:
             pkl_names = [n for n in zf.namelist() if n.endswith(".pkl")]
@@ -274,6 +274,9 @@ class PickleCheck(Check):
                     for w in sub["warnings"]:
                         w["inner_file"] = name
                         result["warnings"].append(w)
+                    for item in sub.get("disassembly", []):
+                        item["inner_file"] = name
+                        result["disassembly"].append(item)
                     result["reduce_count"] += sub["reduce_count"]
 
         return result

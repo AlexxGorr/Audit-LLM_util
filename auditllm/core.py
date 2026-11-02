@@ -1050,12 +1050,14 @@ def _print_details(details: dict):
             if not v:
                 continue
             print(f"     disassembly:")
-            for item in v[:30]:  # первые 30 opcodes
+            for item in v[:30]:
                 pos = item.get("pos", "?")
                 opcode = item.get("opcode", "?")
                 arg = item.get("arg", "")
+                inner = item.get("inner_file")
+                prefix = f"{inner}: " if inner else ""
                 arg_str = f" {arg}" if arg else ""
-                print(f"       {pos:>4}: {opcode:<20}{arg_str}")
+                print(f"       {prefix}{pos:>4}: {opcode:<20}{arg_str}")
             if len(v) > 30:
                 print(f"       ... ({len(v) - 30} more)")
 
