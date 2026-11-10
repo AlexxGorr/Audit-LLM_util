@@ -23,6 +23,7 @@ from auditllm.checks import get_checks, get_all_checks
 
 from rich.console import Console
 from rich.table import Table
+from rich import box
 import json
 
 
@@ -1238,7 +1239,7 @@ def _print_list_table(models_dir, models, summary):
         all_checks.update(m["checks"].keys())
     check_names = sorted(all_checks)
 
-    table = Table(show_header=True, header_style="bold")
+    table = Table(show_header=True, header_style="bold", box=box.SIMPLE, border_style='dim')
     table.add_column("#", style="dim", width=3)
     table.add_column("Имя")
     table.add_column("Размер", justify="right")
@@ -1322,7 +1323,7 @@ def _print_inbox_table(models_dir, models, summary):
         _print_tips([f"Положи модели в {models_dir}"])
         return
 
-    table = Table(show_header=True, header_style="bold")
+    table = Table(show_header=True, header_style="bold", box=box.SIMPLE, border_style='dim')
     table.add_column("#", style="dim", width=3)
     table.add_column("Имя")
     table.add_column("Размер", justify="right")
