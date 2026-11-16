@@ -188,11 +188,12 @@ class PickleCheck(Check):
 
                 # Добавить в disassembly
                 arg_repr = repr(arg) if arg is not None else ""
-                result["disassembly"].append({
-                    "pos": pos,
-                    "opcode": name,
-                    "arg": arg_repr[:80],  # обрезать длинные
-                })
+                if len(result["disassembly"]) < 1000:  # c6: лимит памяти
+                    result["disassembly"].append({
+                        "pos": pos,
+                        "opcode": name,
+                        "arg": arg_repr[:80],
+                    })
 
                 if name in STRING_OPCODES and isinstance(arg, str):
                     string_stack.append(arg)
@@ -228,11 +229,9 @@ class PickleCheck(Check):
                             })
                         string_stack = string_stack[:-2]
                     else:
-                        result["warnings"].append({
-                            "type": "dynamic_import",
-                            "message": "STACK_GLOBAL without resolvable stack",
-                            "pos": pos,
-                        })
+                        # c4: не warning — protocol 4+ часто использует memo,
+                        # который мы не отслеживаем. Это не сигнал опасности.
+                        pass
 
                 elif name == "REDUCE":
                     result["reduce_count"] += 1

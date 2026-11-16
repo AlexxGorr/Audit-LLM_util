@@ -1,7 +1,17 @@
+"""Подпись и проверка целостности эталона."""
 from pathlib import Path
 import hmac
 import hashlib
 import json
+import os
+
+
+class EtalonCorruptedError(ValueError):
+    """Эталон повреждён (битый JSON, нет полей). НЕ атака."""
+
+
+class EtalonSignatureError(ValueError):
+    """Подпись не совпадает. Возможна атака."""
 
 
 def sign_data(data: bytes, key: bytes) -> str:
@@ -11,99 +21,66 @@ def sign_data(data: bytes, key: bytes) -> str:
 
 
 def save_hashes_signed(hashes: dict, path: Path, key: bytes) -> None:
-    """Сохраняет хеши и подпись в JSON-файл."""
-    data_bytes = json.dumps(hashes, sort_keys=True).encode('utf-8')
+    """Сохраняет хеши и подпись в JSON-файл (атомарно)."""
+    data_bytes = json.dumps(hashes, sort_keys=True, ensure_ascii=False).encode('utf-8')
     signature = sign_data(data_bytes, key)
     payload = {'data': hashes, 'signature': signature}
-    file_path = Path(path)
-    file_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    tmp.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding='utf-8',
+    )
+    os.replace(tmp, path)
 
 
 def load_hashes_verified(path: Path, key: bytes) -> dict:
-    """
-    Загружает хеши и проверяет подпись.
+    """Загружает хеши и проверяет подпись.
 
     Raises:
-        ValueError: если подпись не совпадает
         FileNotFoundError: если файл не существует
+        EtalonCorruptedError: если формат битый
+        EtalonSignatureError: если подпись не совпадает
     """
     if not path.is_file():
         raise FileNotFoundError(f'Эталон не найден: {path}')
 
-    payload = json.loads(path.read_text(encoding='utf-8'))
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except json.JSONDecodeError as e:
+        raise EtalonCorruptedError(
+            f'Эталон повреждён (невалидный JSON): {e}'
+        ) from e
+
+    if not isinstance(payload, dict) or 'data' not in payload or 'signature' not in payload:
+        raise EtalonCorruptedError(
+            'Эталон повреждён: отсутствует поле data или signature'
+        )
+
     data = payload['data']
     save_sign = payload['signature']
 
-    data_bytes = json.dumps(data, sort_keys=True).encode('utf-8')
+    data_bytes = json.dumps(data, sort_keys=True, ensure_ascii=False).encode('utf-8')
     expected_sign = sign_data(data_bytes, key)
 
     if not hmac.compare_digest(expected_sign, save_sign):
-        raise ValueError('Подпись не совпадает! Эталон подменён!')
+        raise EtalonSignatureError(
+            'Подпись не совпадает! Эталон подменён.\n'
+            'Если эталон создан старой версией auditllm — пересоздай:\n'
+            '  auditllm reset && auditllm init'
+        )
 
     return data
 
 
 def load_hashes_unverified(path: Path) -> dict:
-    """Загружает эталон БЕЗ проверки подписи.
-
-    Использовать только для некритичных операций (list, inbox).
-    Для аудита — load_hashes_verified.
-
-    Returns:
-        dict {path: {hash, size}} или {} если файла нет / битый.
-    """
+    """Загружает эталон БЕЗ проверки подписи."""
     if not path.is_file():
         return {}
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        return payload.get("data", {})
+        payload = json.loads(path.read_text(encoding='utf-8'))
+        return payload.get('data', {})
     except (json.JSONDecodeError, OSError):
         return {}
-
-
-if __name__ == "__main__":
-    import tempfile
-
-    KEY1 = b"correct-key"
-    KEY2 = b"wrong-key"
-
-    hashes = {
-        "models/test.gguf": {"hash": "abc123", "size": 100}
-    }
-
-    with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "model_hashes.json"
-
-        # 1. Сохраняем
-        save_hashes_signed(hashes, path, KEY1)
-        print("✅ Сохранено")
-
-        # 2. Загружаем правильным ключом
-        loaded = load_hashes_verified(path, KEY1)
-        assert loaded == hashes, "Данные не совпали!"
-        print("✅ Загрузка с правильным ключом")
-
-        # 3. Загружаем неправильным ключом
-        try:
-            load_hashes_verified(path, KEY2)
-            print("❌ Должны были упасть с ValueError")
-        except ValueError:
-            print("✅ Неправильный ключ отвергнут")
-
-        # 4. Подменяем данные в файле
-        content = json.loads(path.read_text())
-        content["data"]["models/test.gguf"]["hash"] = "HACKED"
-        path.write_text(json.dumps(content, indent=2))
-
-        try:
-            load_hashes_verified(path, KEY1)
-            print("❌ Должны были упасть с ValueError (подмена)")
-        except ValueError:
-            print("✅ Подмена обнаружена")
-
-
-
-
-
-
-

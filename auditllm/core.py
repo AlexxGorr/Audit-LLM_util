@@ -10,7 +10,11 @@ import shutil
 
 from auditllm.spinner import Spinner
 from auditllm.checks.hash_check import HashCheck
-from auditllm.integrity import load_hashes_verified, save_hashes_signed, load_hashes_unverified
+from auditllm.integrity import (load_hashes_verified,
+                                save_hashes_signed,
+                                load_hashes_unverified,
+                                EtalonCorruptedError,
+                                EtalonSignatureError)
 from auditllm.quarantine import quarantine_file
 from auditllm.scanner import find_model_files
 from auditllm.config import Config
@@ -219,6 +223,7 @@ def cmd_audit(
     update_etalon: bool = False,
     no_quarantine: bool = False,
     new_only: bool = False,
+    allow_partial_update: bool = False,
     progress: "ProgressReporter | None" = None,
     check_names: list[str] | None = None,
 ) -> int:
@@ -232,7 +237,14 @@ def cmd_audit(
 
     try:
         old_hashes = load_hashes_verified(config.etalon_path, key)
-    except ValueError as e:
+    except EtalonCorruptedError as e:
+        logger.error("etalon_corrupted", extra={"extra_data": {
+            "path": str(config.etalon_path),
+            "error": str(e),
+            "hint": "Эталон повреждён. Пересоздай: auditllm reset && auditllm init"
+        }})
+        return 2
+    except EtalonSignatureError as e:
         logger.error("etalon_signature_invalid", extra={"extra_data": {
             "path": str(config.etalon_path),
             "error": str(e),
@@ -349,6 +361,11 @@ def cmd_audit(
     print_report(diff, results)
 
     if update_etalon:
+        if new_only and not allow_partial_update:
+            logger.warning("partial_update_no_removed", extra={"extra_data": {
+                "hint": "removed не будут удалены в --new-only"
+            }})
+            print("⚠️  --new-only: отсутствующие файлы НЕ будут удалены из эталона")
         updated = dict(old_hashes)
         added_clean = []
         added_with_warn = []
@@ -638,13 +655,14 @@ def cmd_promote(
 
     try:
         old_hashes = load_hashes_verified(config.etalon_path, key)
-    except FileNotFoundError:
-        logger.error("etalon_not_found", extra={"extra_data": {
+    except EtalonCorruptedError as e:
+        logger.error("etalon_corrupted", extra={"extra_data": {
             "path": str(config.etalon_path),
-            "hint": "Если это первый запуск — используй --init"
+            "error": str(e),
+            "hint": "Эталон повреждён. Пересоздай: auditllm reset && auditllm init"
         }})
-        return 1
-    except ValueError as e:
+        return 2
+    except EtalonSignatureError as e:
         logger.error("etalon_signature_invalid", extra={"extra_data": {
             "path": str(config.etalon_path),
             "error": str(e),
@@ -1416,7 +1434,7 @@ def run_checks(
             'path': str(models_dir)
         }})
         return {}
-    logger.info('scan_started', extra={'count': len(files)})
+    logger.info('scan_started', extra={'extra_data': {'count': len(files)}})
     if progress:
         progress.start([(f.name, f.stat().st_size) for f in files])
     result = {}
@@ -1447,17 +1465,17 @@ def run_checks(
                 progress.finish_check()
 
             file_results[check.name] = res
-            logger.debug('check_done', extra={
+            logger.debug('check_done', extra={'extra_data': {
                 'path': str(relative),
                 'check': check.name,
                 'status': res.status
-            })
+            }})
         result[str(relative)] = file_results
         if progress:
             progress.finish_file()
     if progress:
         progress.finish()
-    logger.info('scan_finished', extra={'count': len(result)})
+    logger.info('scan_finished', extra={'extra_data': {'count': len(result)}})
     return result
 
 
@@ -1517,8 +1535,9 @@ def _resolve_path(path: Path, models_dir: Path) -> Path | None:
             return candidate
         if path.parent == Path("."):
             matches = sorted(m for m in models_dir.rglob(path.name) if m.is_file())
-            if matches:
+            if len(matches) == 1:
                 return matches[0]
+            # b5: неоднозначность — возвращаем None
     return None
 
 

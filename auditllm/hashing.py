@@ -14,7 +14,7 @@ def get_file_hash(
 
     Args:
         file_path: путь к файлу
-        chunk_size: размер чанка в байтах (по умолчанию 8 КБ)
+        chunk_size: размер чанка в байтах
         progress_callback: вызывается после каждого чанка с числом
                            обработанных байт (длина чанка)
         cancel_check: если возвращает True — прервать хеширование
@@ -25,9 +25,16 @@ def get_file_hash(
     Raises:
         FileNotFoundError: если файл не существует
         InterruptedError: если cancel_check вернул True
+        RuntimeError: если файл изменился во время хеширования
     """
     if not file_path.is_file():
         raise FileNotFoundError(f"Файл не найден: {file_path}")
+
+    # b6: фиксируем размер ДО чтения
+    try:
+        file_size = file_path.stat().st_size
+    except OSError as e:
+        raise FileNotFoundError(f"Файл недоступен: {file_path}") from e
 
     hash_obj = hashlib.sha256()
     with open(file_path, "rb") as f:
@@ -38,9 +45,19 @@ def get_file_hash(
             if progress_callback:
                 progress_callback(len(chunk))
 
-    file_size = file_path.stat().st_size
-    return hash_obj.hexdigest(), file_size
+    # b6: проверяем, что файл не изменился
+    try:
+        actual_size = file_path.stat().st_size
+    except OSError as e:
+        raise FileNotFoundError(f"Файл исчез во время хеширования: {file_path}") from e
 
+    if actual_size != file_size:
+        raise RuntimeError(
+            f"Файл изменился во время хеширования: {file_path} "
+            f"(было {file_size}, стало {actual_size})"
+        )
+
+    return hash_obj.hexdigest(), file_size
 
 
 

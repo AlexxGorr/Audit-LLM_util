@@ -35,7 +35,7 @@ def setup_logger(log_path: Path, verbose: bool = False) -> logging.Logger:
         backupCount=5,
         encoding="utf-8",
     )
-    file_handler.setLevel(logging.INFO)
+    file_handler.setLevel(logging.DEBUG)  # c8: чтобы check_done попадал в файл
     file_handler.setFormatter(JSONFormatter())
     logger.addHandler(file_handler)
 

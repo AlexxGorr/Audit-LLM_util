@@ -164,6 +164,11 @@ def audit(
         help="Отключить прогресс-бар",
         rich_help_panel="Output",
     ),
+    allow_partial_update: bool = typer.Option(
+            False, "--allow-partial-update",
+            help="Разрешить --update-etalon с --new-only (removed не будут удалены)",
+            rich_help_panel="Audit Behavior",
+        ),
     verbose: bool = typer.Option(
         False, "-v", "--verbose",
         help="Подробный вывод",
@@ -171,6 +176,22 @@ def audit(
     ),
 ):
     """Запустить аудит: сравнить модели с эталоном."""
+    if check and "hash" not in check:
+        typer.echo(
+            "🚨 --check без 'hash' не поддерживается: аудит целостности "
+            "требует сравнения хешей.\n"
+            "   Добавь 'hash' в список проверок или убери --check.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if update_etalon and new_only and not allow_partial_update:
+        typer.echo(
+            "🚨 --update-etalon с --new-only не удалит отсутствующие файлы "
+            "(diff строится только по новым).\n"
+            "   Используй полный audit или добавь --allow-partial-update.",
+            err=True,
+        )
+        raise typer.Exit(1)
     config, logger, key = _prepare(config_path, models_dir, data_dir, quarantine_dir, verbose)
     progress = _make_progress(no_progress=no_progress)
     try:
@@ -181,6 +202,7 @@ def audit(
                     update_etalon=update_etalon,
                     no_quarantine=no_quarantine,
                     new_only=new_only,
+                    allow_partial_update=allow_partial_update,
                     progress=progress,
                     check_names=check,
                 )
@@ -190,6 +212,7 @@ def audit(
                 update_etalon=update_etalon,
                 no_quarantine=no_quarantine,
                 new_only=new_only,
+                allow_partial_update=allow_partial_update,
                 progress=progress,
                 check_names=check,
             )

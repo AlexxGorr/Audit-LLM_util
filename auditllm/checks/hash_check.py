@@ -43,12 +43,20 @@ class HashCheck(Check):
                 progress_callback=chunk_cb,
                 cancel_check=cancel_cb,
             )
-        except (FileNotFoundError, InterruptedError) as e:
+        except FileNotFoundError as e:
             duration_ms = int((time.monotonic() - start) * 1000)
             return CheckResult(
                 status="fail",
-                message=f"Hash calculation failed: {e}",
+                message=f"File not found: {e}",
                 details={"error": str(e)},
+                duration_ms=duration_ms,
+            )
+        except InterruptedError as e:
+            duration_ms = int((time.monotonic() - start) * 1000)
+            return CheckResult(
+                status="skip",
+                message="Cancelled by user",
+                details={"cancelled": True, "error": str(e)},
                 duration_ms=duration_ms,
             )
 
