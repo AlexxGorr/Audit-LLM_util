@@ -3,7 +3,7 @@ from auditllm.checks.base import CheckResult, Check
 from auditllm.hashing import get_file_hash
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from auditllm.progress import ProgressReporter
@@ -25,6 +25,7 @@ class HashCheck(Check):
             file_path: Path,
             context: dict | None = None,
             progress: "ProgressReporter | None" = None,
+            cancel_check: "Callable[[], bool] | None" = None,
     ) -> CheckResult:
         """Считает хеш и сравнивает с эталоном (если есть)."""
         start = time.monotonic()
@@ -35,6 +36,9 @@ class HashCheck(Check):
                 progress.advance(n_bytes)
 
         def cancel_cb() -> bool:
+            # d2: приоритет — внешний cancel_check, fallback на progress
+            if cancel_check is not None:
+                return cancel_check()
             return progress.is_cancelled if progress else False
 
         try:

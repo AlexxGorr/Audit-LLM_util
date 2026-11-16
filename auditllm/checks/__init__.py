@@ -11,6 +11,21 @@ REGISTRY: dict[str, type[Check]] = {
 }
 
 
+def register_check(name: str, cls: type[Check]) -> None:
+    """Регистрирует новую проверку.
+
+    Args:
+        name: имя проверки (должно совпадать с cls.name)
+        cls: класс проверки (наследник Check)
+
+    Raises:
+        ValueError: если имя уже занято
+    """
+    if name in REGISTRY:
+        raise ValueError(f"Check '{name}' already registered")
+    REGISTRY[name] = cls
+
+
 def get_all_checks() -> list[Check]:
     """Возвращает экземпляры всех зарегистрированных проверок."""
     return [cls() for cls in REGISTRY.values()]
@@ -67,6 +82,7 @@ __all__ = [
     "get_check",
     "get_checks",
     "all_supported_extensions",
+    "register_check",  # d3
 ]
 
 

@@ -1541,63 +1541,6 @@ def _resolve_path(path: Path, models_dir: Path) -> Path | None:
     return None
 
 
-# ─── Trust (для cli.py) ─────────────────────────────────
-
-def _print_trust_table(result):
-    print()
-    print(f"🔍 Trust check: {result.repo_id}")
-    print()
-
-    if not result.exists:
-        print(f"❌ {result.error}")
-        print()
-        return
-
-    print(f"  Author:       {result.author}{' (official)' if result.author_official else ''}")
-    print(f"  Downloads:    {result.downloads:,}")
-    print(f"  Likes:        {result.likes:,}")
-    print(f"  Created:      {result.created_at[:10] if result.created_at else '?'}")
-    print(f"  Last update:  {result.last_modified[:10] if result.last_modified else '?'}")
-    print(f"  License:      {result.license or '—'}")
-    print(f"  Model card:   {'✓' if result.has_model_card else '✗'}")
-    print(f"  Files:        {result.files_count}")
-    print()
-
-    print(f"  Trust score:  {result.trust_score}/100")
-    print()
-
-    for reason in result.reasons:
-        sign = reason["sign"]
-        marker = {"+": "✓", "-": "✗", "0": "○"}.get(sign, "·")
-        print(f"    {marker} {reason['text']}")
-
-    print()
-    status = status_from_score(result.trust_score)
-    label = {"pass": "✅ TRUSTED", "warn": "⚠️  CAUTION", "fail": "🚨 LOW TRUST"}[status]
-    print(f"  {label}")
-    print()
-
-
-def _print_trust_json(result):
-    output = {
-        "repo_id": result.repo_id,
-        "exists": result.exists,
-        "author": result.author,
-        "author_official": result.author_official,
-        "downloads": result.downloads,
-        "likes": result.likes,
-        "created_at": result.created_at,
-        "last_modified": result.last_modified,
-        "license": result.license,
-        "has_model_card": result.has_model_card,
-        "files_count": result.files_count,
-        "trust_score": result.trust_score,
-        "reasons": result.reasons,
-        "duration_ms": result.duration_ms,
-        "error": result.error,
-    }
-    print(json.dumps(output, indent=2, ensure_ascii=False))
-
 
 def _print_report_table(results: list) -> None:
     """Печатает детали из state."""
