@@ -78,7 +78,7 @@ class AuditShell:
         while True:
             try:
                 if self._use_tty:
-                    line = self.session.prompt("auditllm>>>> ").strip()
+                    line = self.session.prompt("auditllm>>> ").strip()
                 else:
                     line = input("auditllm>>> ").strip()
             except KeyboardInterrupt:
@@ -145,6 +145,107 @@ class AuditShell:
         print(f"  etalon:         {self.config.etalon_path}")
         print(f"  state:          {self.config.state_path}")
         print(f"  log:            {self.config.log_path}")
+
+
+    # ─── Read-only команды ─────────────────────────────────
+
+    def _cmd_list(self, args: list[str]) -> None:
+        """list [--json]"""
+        as_json = "--json" in args
+        code = cmd_list(self.config, self.logger, as_json=as_json)
+        if code != 0:
+            print(f"⚠️  list завершился с кодом {code}")
+
+    def _cmd_inbox(self, args: list[str]) -> None:
+        """inbox [--new-only] [--json]"""
+        as_json = "--json" in args
+        new_only = "--new-only" in args
+        code = cmd_inbox(self.config, self.logger, as_json=as_json, new_only=new_only)
+        if code != 0:
+            print(f"⚠️  inbox завершился с кодом {code}")
+
+    def _cmd_inspect(self, args: list[str]) -> None:
+        """inspect <file> [--show hash,header,pickle] [--json] [--all]"""
+        as_json = "--json" in args
+        all_files = "--all" in args
+        check_names = None
+        paths = []
+        i = 0
+        while i < len(args):
+            if args[i] == "--show" and i + 1 < len(args):
+                check_names = args[i + 1].split(",")
+                i += 2
+            elif args[i].startswith("--"):
+                i += 1
+            else:
+                paths.append(Path(args[i]))
+                i += 1
+
+        if not paths and not all_files:
+            print("🚨 Укажи файлы или --all")
+            return
+
+        code = cmd_inspect(
+            self.config, self.logger,
+            paths=paths, all_files=all_files,
+            check_names=check_names, as_json=as_json,
+        )
+        if code != 0:
+            print(f"⚠️  inspect завершился с кодом {code}")
+
+    def _cmd_report(self, args: list[str]) -> None:
+        """report [<file>] [--json]"""
+        as_json = "--json" in args
+        paths = [Path(a) for a in args if not a.startswith("--")]
+        code = cmd_report(self.config, self.logger, paths=paths or None, as_json=as_json)
+        if code != 0:
+            print(f"⚠️  report завершился с кодом {code}")
+
+    def _cmd_trust(self, args: list[str]) -> None:
+        """trust <repo_id> [--json] [--timeout N]"""
+        if not args:
+            print("🚨 Укажи repo_id: trust <author/model>")
+            return
+        repo_id = None
+        as_json = False
+        timeout = 5
+        i = 0
+        while i < len(args):
+            if args[i] == "--json":
+                as_json = True
+                i += 1
+            elif args[i] == "--timeout" and i + 1 < len(args):
+                try:
+                    timeout = int(args[i + 1])
+                except ValueError:
+                    print(f"🚨 --timeout: не число: {args[i + 1]}")
+                    return
+                i += 2
+            elif not args[i].startswith("--"):
+                repo_id = args[i]
+                i += 1
+            else:
+                i += 1
+
+        if not repo_id:
+            print("🚨 Укажи repo_id: trust <author/model>")
+            return
+
+        from auditllm.cli import _print_trust_table, _print_trust_json
+        result = check_trust(repo_id, timeout=timeout)
+        if as_json:
+            _print_trust_json(result)
+        else:
+            _print_trust_table(result)
+
+        if not result.exists:
+            print(f"⚠️  Репозиторий не найден: {result.error}")
+        else:
+            status = status_from_score(result.trust_score)
+            if status == "fail":
+                print(f"🚨 Низкий trust: {result.trust_score}/100")
+            elif status == "warn":
+                print(f"⚠️  Средний trust: {result.trust_score}/100")
 
 
 def run_shell(config: Config, logger: logging.Logger, key: bytes) -> int:
