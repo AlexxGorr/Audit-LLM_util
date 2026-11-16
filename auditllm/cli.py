@@ -550,10 +550,46 @@ def promote(
 
 # ─── shell ──────────────────────────────────────────────
 @app.command()
-def shell():
+def shell(
+    config_path: Path | None = typer.Option(
+        None, "--config",
+        help="Путь к config.toml",
+        rich_help_panel="Configuration",
+    ),
+    models_dir: Path | None = typer.Option(
+        None, "--models-dir",
+        help="Переопределить папку моделей",
+        rich_help_panel="Path Overrides",
+    ),
+    data_dir: Path | None = typer.Option(
+        None, "--data-dir",
+        help="Переопределить папку данных",
+        rich_help_panel="Path Overrides",
+    ),
+    quarantine_dir: Path | None = typer.Option(
+        None, "--quarantine-dir",
+        help="Переопределить карантин",
+        rich_help_panel="Path Overrides",
+    ),
+    verbose: bool = typer.Option(
+        False, "-v", "--verbose",
+        help="Подробный вывод",
+        rich_help_panel="Output",
+    ),
+):
     """Интерактивная оболочка (REPL)."""
-    typer.echo("🚧 Команда 'shell' ещё не реализована")
-    raise typer.Exit(0)
+    try:
+        from auditllm.shell import run_shell
+    except ImportError as e:
+        typer.echo(
+            f"🚨 Команда 'shell' недоступна: {e}\n"
+            "   Установи: pip install 'prompt_toolkit>=3.0.0'",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    config, logger, key = _prepare(config_path, models_dir, data_dir, quarantine_dir, verbose)
+    raise typer.Exit(run_shell(config, logger, key))
 
 
 # ─── trust ──────────────────────────────────────────────
