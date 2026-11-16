@@ -1,8 +1,10 @@
 """Интерактивная оболочка (REPL) для auditllm."""
+import json
 import logging
 import shlex
-from pathlib import Path
 import sys
+
+from pathlib import Path
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
@@ -59,6 +61,7 @@ class AuditShell:
             auto_suggest=AutoSuggestFromHistory(),
             completer=WordCompleter(COMMANDS, ignore_case=True),
             key_bindings=self._make_key_bindings(),
+            reserve_space_for_menu=0,
         )
 
     @staticmethod
