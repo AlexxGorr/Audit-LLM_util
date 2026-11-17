@@ -592,6 +592,64 @@ def shell(
     raise typer.Exit(run_shell(config, logger, key))
 
 
+# ─── etalon ─────────────────────────────────────────────
+etalon_app = typer.Typer(help="Управление эталоном")
+
+
+@etalon_app.command("update")
+def etalon_update(
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Показать, что будет удалено, но не менять эталон",
+        rich_help_panel="Etalon Behavior",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="⚠️  Без подтверждения (для CI/CD). Используй осознанно!",
+        rich_help_panel="Etalon Behavior",
+    ),
+    config_path: Path | None = typer.Option(
+        None, "--config",
+        help="Путь к config.toml",
+        rich_help_panel="Configuration",
+    ),
+    models_dir: Path | None = typer.Option(
+        None, "--models-dir",
+        help="Переопределить папку моделей",
+        rich_help_panel="Path Overrides",
+    ),
+    data_dir: Path | None = typer.Option(
+        None, "--data-dir",
+        help="Переопределить папку данных",
+        rich_help_panel="Path Overrides",
+    ),
+    quarantine_dir: Path | None = typer.Option(
+        None, "--quarantine-dir",
+        help="Переопределить карантин",
+        rich_help_panel="Path Overrides",
+    ),
+    verbose: bool = typer.Option(
+        False, "-v", "--verbose",
+        help="Подробный вывод",
+        rich_help_panel="Output",
+    ),
+):
+    """Синхронизировать эталон с диском (удалить отсутствующие).
+
+    Не пересчитывает хеши — только удаляет записи, которых нет на диске.
+    Новые файлы НЕ добавляет (для этого: auditllm audit --update-etalon).
+    """
+    config, logger, key = _prepare(config_path, models_dir, data_dir, quarantine_dir, verbose)
+    from auditllm.core import cmd_etalon_update
+    raise typer.Exit(cmd_etalon_update(
+        config, logger, key,
+        dry_run=dry_run, yes=yes,
+    ))
+
+
+app.add_typer(etalon_app, name="etalon")
+
+
 # ─── trust ──────────────────────────────────────────────
 @app.command()
 def trust(

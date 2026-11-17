@@ -419,6 +419,123 @@ def cmd_audit(
     return 0
 
 
+def cmd_etalon_update(
+    config: Config,
+    logger: logging.Logger,
+    key: bytes,
+    dry_run: bool = False,
+    yes: bool = False,
+) -> int:
+    """Синхронизирует эталон с диском БЕЗ пересчёта хешей.
+
+    Удаляет из эталона записи, которых нет на диске.
+    Новые файлы НЕ добавляет (для этого нужен audit --update-etalon).
+
+    Returns:
+        0 — успех / нечего обновлять
+        1 — эталон не найден / ошибка
+        2 — подпись не совпадает
+    """
+    if not config.etalon_path.exists():
+        logger.error("etalon_not_found", extra={"extra_data": {
+            "path": str(config.etalon_path),
+            "hint": "Если это первый запуск — используй init"
+        }})
+        return 1
+
+    try:
+        old_hashes = load_hashes_verified(config.etalon_path, key)
+    except EtalonCorruptedError as e:
+        logger.error("etalon_corrupted", extra={"extra_data": {
+            "path": str(config.etalon_path),
+            "error": str(e),
+            "hint": "Эталон повреждён. Пересоздай: auditllm reset && auditllm init"
+        }})
+        return 2
+    except EtalonSignatureError as e:
+        logger.error("etalon_signature_invalid", extra={"extra_data": {
+            "path": str(config.etalon_path),
+            "error": str(e),
+            "hint": "🚨 Возможна атака! Эталон подменён."
+        }})
+        return 2
+
+    if not config.models_dir.is_dir():
+        logger.error("models_dir_not_found", extra={"extra_data": {
+            "path": str(config.models_dir)
+        }})
+        return 1
+
+    # Только список файлов (без хешей)
+    files = find_model_files(config.models_dir, exclude_dirs=[config.quarantine_dir])
+    on_disk = {str(f.relative_to(config.models_dir)) for f in files}
+
+    # removed: в эталоне, но нет на диске
+    removed = sorted(set(old_hashes.keys()) - on_disk)
+    # added: на диске, но нет в эталоне (не добавляем без хешей)
+    added = sorted(on_disk - set(old_hashes.keys()))
+
+    if not removed:
+        print(f"✅ Эталон синхронизирован: {len(old_hashes)} файлов, удалять нечего")
+        if added:
+            print(f"   ⚠️  Новые файлы (нужен audit --update-etalon): {', '.join(added)}")
+        return 0
+
+    # E4: подробный отчёт с размерами
+    print()
+    print("=" * 60)
+    print("СИНХРОНИЗАЦИЯ ЭТАЛОНА".center(60))
+    print("=" * 60)
+    print()
+    print(f"  Файлов в эталоне:  {len(old_hashes)}")
+    print(f"  Файлов на диске:   {len(on_disk)}")
+    print()
+    print(f"  🗑️  Будет удалено из эталона ({len(removed)}):")
+    print()
+    total_size = 0
+    for p in removed:
+        size = old_hashes[p].get("size", 0)
+        total_size += size
+        print(f"     - {p}  ({format_size(size)})")
+    print()
+    print(f"  Итого удаляется: {format_size(total_size)} из эталона")
+    if added:
+        print()
+        print(f"  ➕ Новые файлы (НЕ добавляются без хешей, {len(added)}):")
+        for p in added:
+            print(f"     - {p}")
+    print()
+    print("  ⚠️  Модели на диске НЕ трогаются. Удаляются только записи из эталона.")
+    print()
+
+    if dry_run:
+        print("🔍 Dry run — эталон НЕ изменён")
+        return 0
+
+    if not yes:
+        try:
+            answer = input("Введи 'yes' для подтверждения: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nОтменено")
+            return 0
+        if answer != "yes":
+            print("Отменено")
+            return 0
+
+    updated = {k: v for k, v in old_hashes.items() if k not in removed}
+    save_hashes_signed(updated, config.etalon_path, key)
+
+    logger.info("etalon_updated", extra={"extra_data": {
+        "count": len(updated),
+        "removed": removed,
+        "added_skipped": added,
+    }})
+
+    print()
+    print(f"✅ Эталон обновлён: {len(updated)} файлов (удалено {len(removed)})")
+    return 0
+
+
 def cmd_list(config: Config, logger: logging.Logger, as_json: bool = False) -> int:
     state = load_state(config.state_path)
     etalon = load_hashes_unverified(config.etalon_path)

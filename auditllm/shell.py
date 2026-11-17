@@ -26,14 +26,15 @@ from auditllm.progress import ProgressReporter
 HISTORY_PATH = Path.home() / ".auditllm_history"
 
 COMMANDS = [
-    "audit", "init", "list", "inbox", "inspect", "promote",
+    "audit", "init", "etalon", "list", "inbox", "inspect", "promote",
     "report", "trust", "reset", "config", "help", "exit", "quit",
 ]
 
 HELP_TEXT = """\
 Доступные команды:
   init                                                      Создать эталон
-  audit [--new-only] [--no-quarantine] [--update-etalon]   Запустить аудит
+  audit [--new-only] [--no-quarantine] [--update-etalon]    Запустить аудит
+  etalon update [--dry-run] [--yes]                         Синхронизировать эталон (--yes — для CI)
   list [--json]                                             Реестр моделей
   inbox [--new-only] [--json]                               Файлы в папке
   inspect <file> [--show hash,header,pickle] [--json]       Детали файла
@@ -228,6 +229,24 @@ class AuditShell:
         code = cmd_inbox(self.config, self.logger, as_json=as_json, new_only=new_only)
         if code != 0:
             print(f"⚠️  inbox завершился с кодом {code}")
+
+    def _cmd_etalon(self, args: list[str]) -> None:
+        """etalon update [--dry-run] [--yes]"""
+        if not args or args[0] != "update":
+            print("🚨 Использование: etalon update [--dry-run] [--yes]")
+            return
+        dry_run = "--dry-run" in args
+        yes = "--yes" in args or "-y" in args
+        if not yes and not dry_run:
+            print("🚨 В shell подтверждение недоступно. Используй --yes или --dry-run.")
+            return
+        from auditllm.core import cmd_etalon_update
+        code = cmd_etalon_update(
+            self.config, self.logger, self.key,
+            dry_run=dry_run, yes=yes,
+        )
+        if code != 0:
+            print(f"⚠️  etalon update завершился с кодом {code}")
 
     def _cmd_inspect(self, args: list[str]) -> None:
         """inspect <file> [--show hash,header,pickle] [--json] [--all]"""
