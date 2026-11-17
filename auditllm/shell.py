@@ -20,6 +20,7 @@ from auditllm.core import (
     cmd_promote, cmd_report, cmd_reset,
 )
 from auditllm.trust import check_trust, status_from_score
+from auditllm.progress import ProgressReporter
 
 
 HISTORY_PATH = Path.home() / ".auditllm_history"
@@ -316,7 +317,8 @@ class AuditShell:
 
     def _cmd_init(self, args: list[str]) -> None:
         """init — создать эталон."""
-        code = cmd_init(self.config, self.logger, self.key)
+        progress = ProgressReporter(enabled=self._use_tty, use_tty=self._use_tty)
+        code = cmd_init(self.config, self.logger, self.key, progress=progress)
         if code != 0:
             print(f"⚠️  init завершился с кодом {code}")
 
@@ -332,12 +334,15 @@ class AuditShell:
                   "   Используй полный audit или добавь --allow-partial-update.")
             return
 
+        progress = ProgressReporter(enabled=self._use_tty, use_tty=self._use_tty)
+
         code = cmd_audit(
             self.config, self.logger, self.key,
             update_etalon=update_etalon,
             no_quarantine=no_quarantine,
             new_only=new_only,
             allow_partial_update=allow_partial_update,
+            progress=progress,
         )
         if code != 0:
             print(f"⚠️  audit завершился с кодом {code}")
