@@ -616,7 +616,7 @@ def trust(
 
     Не проверяет содержимое файлов. Для аудита — команда audit.
     """
-    result = check_trust(repo_id, timeout=timeout)
+    result = check_trust(repo_id, timeout=timeout, show_spinner=not as_json)
 
     if as_json:
         _print_trust_json(result)

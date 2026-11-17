@@ -9,12 +9,14 @@ from pathlib import Path
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.completion import WordCompleter, Completer, Completion
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.styles import Style
+from prompt_toolkit.formatted_text import ANSI
 
 from auditllm.config import Config
 from auditllm.core import (
-    cmd_audit, cmd_list, cmd_inbox, cmd_inspect,
+    cmd_audit, cmd_init, cmd_list, cmd_inbox, cmd_inspect,
     cmd_promote, cmd_report, cmd_reset,
 )
 from auditllm.trust import check_trust, status_from_score
@@ -23,12 +25,13 @@ from auditllm.trust import check_trust, status_from_score
 HISTORY_PATH = Path.home() / ".auditllm_history"
 
 COMMANDS = [
-    "audit", "list", "inbox", "inspect", "promote",
+    "audit", "init", "list", "inbox", "inspect", "promote",
     "report", "trust", "reset", "config", "help", "exit", "quit",
 ]
 
 HELP_TEXT = """\
 Доступные команды:
+  init                                                      Создать эталон
   audit [--new-only] [--no-quarantine] [--update-etalon]   Запустить аудит
   list [--json]                                             Реестр моделей
   inbox [--new-only] [--json]                               Файлы в папке
@@ -39,8 +42,58 @@ HELP_TEXT = """\
   reset [--yes]                                             Сбросить эталон
   config                                                    Текущие пути
   help                                                      Эта справка
-  exit / quit                                               Выход (Ctrl+D)
+  exit / quit                                               Выход
+
+Горячие клавиши:
+  Ctrl+C   Прервать ввод / очистить строку
+  Ctrl+D   Выход из shell
+  Ctrl+L   Очистить экран
+  Ctrl+R   Поиск по истории команд
+  Tab      Автодополнение команд и путей
 """
+
+
+STYLE = Style.from_dict({
+    "prompt": "ansiblue bold",
+})
+
+
+class ShellCompleter(Completer):
+    """Дополняет команды и пути из models_dir."""
+
+    def __init__(self, models_dir: Path):
+        self.models_dir = models_dir
+        self._commands = COMMANDS
+        self._path_commands = {"inspect", "promote", "report"}
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        parts = text.split()
+
+        # Первое слово — команда
+        if len(parts) <= 1 and not text.endswith(" "):
+            word = parts[0] if parts else ""
+            for cmd in self._commands:
+                if cmd.startswith(word):
+                    yield Completion(cmd, start_position=-len(word))
+            return
+
+        # Если команда — path-команда, дополняем пути
+        cmd = parts[0]
+        if cmd in self._path_commands:
+            # Последнее слово — префикс пути
+            prefix = parts[-1] if not text.endswith(" ") else ""
+            try:
+                candidates = sorted(
+                    p.relative_to(self.models_dir).as_posix()
+                    for p in self.models_dir.rglob("*")
+                    if p.is_file()
+                )
+            except OSError:
+                return
+            for cand in candidates:
+                if cand.startswith(prefix):
+                    yield Completion(cand, start_position=-len(prefix))
 
 
 class AuditShell:
@@ -59,9 +112,10 @@ class AuditShell:
         return PromptSession(
             history=FileHistory(str(HISTORY_PATH)),
             auto_suggest=AutoSuggestFromHistory(),
-            completer=WordCompleter(COMMANDS, ignore_case=True),
+            completer=ShellCompleter(self.config.models_dir),
             key_bindings=self._make_key_bindings(),
             reserve_space_for_menu=0,
+            style=STYLE,
         )
 
     @staticmethod
@@ -73,6 +127,11 @@ class AuditShell:
         def _(event):
             event.app.current_buffer.reset()
 
+        @kb.add("c-l")
+        def _(event):
+            event.app.renderer.clear()
+            event.app.invalidate()
+
         return kb
 
     def run(self) -> int:
@@ -81,7 +140,9 @@ class AuditShell:
         while True:
             try:
                 if self._use_tty:
-                    line = self.session.prompt("auditllm>>> ").strip()
+                    line = self.session.prompt(
+                        ANSI("\x1b[34mauditllm>>> \x1b[0m")
+                    ).strip()
                 else:
                     line = input("auditllm>>> ").strip()
             except KeyboardInterrupt:
@@ -235,7 +296,7 @@ class AuditShell:
             return
 
         from auditllm.cli import _print_trust_table, _print_trust_json
-        result = check_trust(repo_id, timeout=timeout)
+        result = check_trust(repo_id, timeout=timeout, show_spinner=not as_json)
         if as_json:
             _print_trust_json(result)
         else:
@@ -249,6 +310,67 @@ class AuditShell:
                 print(f"🚨 Низкий trust: {result.trust_score}/100")
             elif status == "warn":
                 print(f"⚠️  Средний trust: {result.trust_score}/100")
+
+
+    # ─── Мутирующие команды ────────────────────────────────
+
+    def _cmd_init(self, args: list[str]) -> None:
+        """init — создать эталон."""
+        code = cmd_init(self.config, self.logger, self.key)
+        if code != 0:
+            print(f"⚠️  init завершился с кодом {code}")
+
+    def _cmd_audit(self, args: list[str]) -> None:
+        """audit [--new-only] [--no-quarantine] [--update-etalon] [--allow-partial-update]"""
+        new_only = "--new-only" in args
+        no_quarantine = "--no-quarantine" in args
+        update_etalon = "--update-etalon" in args
+        allow_partial_update = "--allow-partial-update" in args
+
+        if update_etalon and new_only and not allow_partial_update:
+            print("🚨 --update-etalon с --new-only не удалит отсутствующие файлы.\n"
+                  "   Используй полный audit или добавь --allow-partial-update.")
+            return
+
+        code = cmd_audit(
+            self.config, self.logger, self.key,
+            update_etalon=update_etalon,
+            no_quarantine=no_quarantine,
+            new_only=new_only,
+            allow_partial_update=allow_partial_update,
+        )
+        if code != 0:
+            print(f"⚠️  audit завершился с кодом {code}")
+
+    def _cmd_promote(self, args: list[str]) -> None:
+        """promote [<file>] [--force] [--dry-run] [--json]"""
+        force = "--force" in args
+        dry_run = "--dry-run" in args
+        as_json = "--json" in args
+        paths = [Path(a) for a in args if not a.startswith("--")]
+
+        code = cmd_promote(
+            self.config, self.logger, self.key,
+            paths=paths or None,
+            force=force,
+            dry_run=dry_run,
+            as_json=as_json,
+        )
+        if code != 0:
+            print(f"⚠️  promote завершился с кодом {code}")
+
+    def _cmd_reset(self, args: list[str]) -> None:
+        """reset [--yes] [--no-backup]"""
+        yes = "--yes" in args or "-y" in args
+        no_backup = "--no-backup" in args
+
+        code = cmd_reset(
+            self.config, self.logger, self.key,
+            no_backup=no_backup,
+            yes=yes,
+        )
+        if code != 0:
+            print(f"⚠️  reset завершился с кодом {code}")
 
 
 def run_shell(config: Config, logger: logging.Logger, key: bytes) -> int:

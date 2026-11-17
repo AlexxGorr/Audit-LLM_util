@@ -3,6 +3,9 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
+import sys
+from auditllm.spinner import Spinner
+
 import requests
 
 HF_API = "https://huggingface.co/api/models"
@@ -36,27 +39,35 @@ class TrustResult:
     gated: str = ''
 
 
-def check_trust(repo_id: str, timeout: int = 5) -> TrustResult:
+def check_trust(
+    repo_id: str,
+    timeout: int = 5,
+    show_spinner: bool | None = None,
+) -> TrustResult:
     """Проверяет репутацию репозитория на HuggingFace.
 
     Args:
         repo_id: например, "meta-llama/Llama-2-7b"
         timeout: таймаут HTTP-запроса в секундах
-
-    Returns:
-        TrustResult с score и reasons.
+        show_spinner: показывать спиннер (None = авто: только в TTY)
     """
+    if show_spinner is None:
+        show_spinner = sys.stdout.isatty()
+
     start = time.monotonic()
     result = TrustResult(repo_id=repo_id)
 
-    # 1. HTTP-запрос
-    try:
-        url = f"{HF_API}/{repo_id}"
-        response = requests.get(url, timeout=timeout)
-    except requests.RequestException as e:
-        result.error = f"Request failed: {e}"
-        result.duration_ms = int((time.monotonic() - start) * 1000)
-        return result
+    with Spinner(enabled=show_spinner, prefix="🔍 ") as spinner:
+        spinner.update(f"trust {repo_id}")
+
+        # 1. HTTP-запрос
+        try:
+            url = f"{HF_API}/{repo_id}"
+            response = requests.get(url, timeout=timeout)
+        except requests.RequestException as e:
+            result.error = f"Request failed: {e}"
+            result.duration_ms = int((time.monotonic() - start) * 1000)
+            return result
 
     # 2. 404 → repo не существует
     if response.status_code in (401, 403, 404):
