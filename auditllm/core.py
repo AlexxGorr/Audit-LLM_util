@@ -425,6 +425,7 @@ def cmd_etalon_update(
     key: bytes,
     dry_run: bool = False,
     yes: bool = False,
+    keep_state: bool = False,
 ) -> int:
     """Синхронизирует эталон с диском БЕЗ пересчёта хешей.
 
@@ -525,18 +526,42 @@ def cmd_etalon_update(
     updated = {k: v for k, v in old_hashes.items() if k not in removed}
     save_hashes_signed(updated, config.etalon_path, key)
 
+    # B: чистим state от «мёртвых» (если не --keep-state)
+    state_cleaned = 0
+    if not keep_state:
+        state = load_state(config.state_path)
+        before = len(state)
+        state = {
+            k: v for k, v in state.items()
+            if k in updated or (config.models_dir / k).is_file()
+        }
+        state_cleaned = before - len(state)
+        if state_cleaned > 0:
+            save_state(state, config.state_path)
+            logger.info("state_cleaned", extra={"extra_data": {
+                "removed": state_cleaned,
+            }})
+
     logger.info("etalon_updated", extra={"extra_data": {
         "count": len(updated),
         "removed": removed,
         "added_skipped": added,
+        "state_cleaned": state_cleaned,
     }})
 
     print()
     print(f"✅ Эталон обновлён: {len(updated)} файлов (удалено {len(removed)})")
+    if state_cleaned > 0:
+        print(f"🧹 State очищен: удалено {state_cleaned} «мёртвых» записей")
     return 0
 
 
-def cmd_list(config: Config, logger: logging.Logger, as_json: bool = False) -> int:
+def cmd_list(
+    config: Config,
+    logger: logging.Logger,
+    as_json: bool = False,
+    show_all: bool = False,
+) -> int:
     state = load_state(config.state_path)
     etalon = load_hashes_unverified(config.etalon_path)
     if not state:
@@ -550,6 +575,10 @@ def cmd_list(config: Config, logger: logging.Logger, as_json: bool = False) -> i
         file_path = config.models_dir / path
         present = file_path.is_file()
         in_etalon = path in etalon
+
+        # B: скрываем «мёртвые» записи (нет на диске И нет в эталоне)
+        if not show_all and not present and not in_etalon:
+            continue
         if present:
             actual_size = file_path.stat().st_size
             if entry.get("size") != actual_size:

@@ -34,8 +34,8 @@ HELP_TEXT = """\
 Доступные команды:
   init                                                      Создать эталон
   audit [--new-only] [--no-quarantine] [--update-etalon]    Запустить аудит
-  etalon update [--dry-run] [--yes]                         Синхронизировать эталон (--yes — для CI)
-  list [--json]                                             Реестр моделей
+  etalon update [--dry-run] [--yes] [--keep-state]          Синхронизировать эталон (--yes — для CI)
+  list [--json] [--all]                                     Реестр моделей
   inbox [--new-only] [--json]                               Файлы в папке
   inspect <file> [--show hash,header,pickle] [--json]       Детали файла
   promote [<file>] [--force] [--dry-run]                    Добавить в эталон
@@ -216,9 +216,13 @@ class AuditShell:
     # ─── Read-only команды ─────────────────────────────────
 
     def _cmd_list(self, args: list[str]) -> None:
-        """list [--json]"""
+        """list [--json] [--all]"""
         as_json = "--json" in args
-        code = cmd_list(self.config, self.logger, as_json=as_json)
+        show_all = "--all" in args
+        code = cmd_list(
+            self.config, self.logger,
+            as_json=as_json, show_all=show_all,
+        )
         if code != 0:
             print(f"⚠️  list завершился с кодом {code}")
 
@@ -231,19 +235,20 @@ class AuditShell:
             print(f"⚠️  inbox завершился с кодом {code}")
 
     def _cmd_etalon(self, args: list[str]) -> None:
-        """etalon update [--dry-run] [--yes]"""
+        """etalon update [--dry-run] [--yes] [--keep-state]"""
         if not args or args[0] != "update":
-            print("🚨 Использование: etalon update [--dry-run] [--yes]")
+            print("🚨 Использование: etalon update [--dry-run] [--yes] [--keep-state]")
             return
         dry_run = "--dry-run" in args
         yes = "--yes" in args or "-y" in args
+        keep_state = "--keep-state" in args
         if not yes and not dry_run:
             print("🚨 В shell подтверждение недоступно. Используй --yes или --dry-run.")
             return
         from auditllm.core import cmd_etalon_update
         code = cmd_etalon_update(
             self.config, self.logger, self.key,
-            dry_run=dry_run, yes=yes,
+            dry_run=dry_run, yes=yes, keep_state=keep_state,
         )
         if code != 0:
             print(f"⚠️  etalon update завершился с кодом {code}")

@@ -254,6 +254,11 @@ def list_models(
         help="Вывод в JSON (для CI/CD)",
         rich_help_panel="Output",
     ),
+    show_all: bool = typer.Option(
+        False, "--all",
+        help="Показать все записи, включая отсутствующие и не в эталоне",
+        rich_help_panel="Output",
+    ),
     verbose: bool = typer.Option(
         False, "-v", "--verbose",
         help="Подробный вывод",
@@ -267,7 +272,7 @@ def list_models(
     Для просмотра того, что лежит в папке сейчас — команда inbox.
     """
     config, logger, _ = _prepare(config_path, models_dir, data_dir, quarantine_dir, verbose)
-    raise typer.Exit(cmd_list(config, logger, as_json=as_json))
+    raise typer.Exit(cmd_list(config, logger, as_json=as_json, show_all=show_all))
 
 
 # ─── report ─────────────────────────────────────────────
@@ -608,6 +613,11 @@ def etalon_update(
         help="⚠️  Без подтверждения (для CI/CD). Используй осознанно!",
         rich_help_panel="Etalon Behavior",
     ),
+    keep_state: bool = typer.Option(
+        False, "--keep-state",
+        help="Не чистить state от «мёртвых» записей (сохранить историю)",
+        rich_help_panel="Etalon Behavior",
+    ),
     config_path: Path | None = typer.Option(
         None, "--config",
         help="Путь к config.toml",
@@ -643,7 +653,7 @@ def etalon_update(
     from auditllm.core import cmd_etalon_update
     raise typer.Exit(cmd_etalon_update(
         config, logger, key,
-        dry_run=dry_run, yes=yes,
+        dry_run=dry_run, yes=yes, keep_state=keep_state,
     ))
 
 
