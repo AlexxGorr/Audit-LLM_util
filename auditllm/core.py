@@ -194,7 +194,7 @@ def cmd_init(
         return 1
 
     logger.info("init_started")
-    checks = [HashCheck()]
+    checks = get_all_checks()  # ← все проверки (hash, header, pickle)
     results = run_checks(
         config.models_dir, checks, logger,
         etalon=None,
@@ -1592,23 +1592,23 @@ def run_checks(
             progress.start_file(i)
 
         for check in checks:
+            if progress:
+                progress.start_check(check.name)
+
             if not check.supports(file):
-                file_results[check.name] = CheckResult(
+                res = CheckResult(
                     status='skip',
                     message=f'Not supported for {file.suffix}',
                 )
-                continue
-            context = etalon.get(str(relative)) if etalon else None
+            else:
+                context = etalon.get(str(relative)) if etalon else None
+                try:
+                    res = check.run(file, context=context, progress=progress)
+                except Exception as e:
+                    res = CheckResult(status='fail', message=f'Check crashed: {e}')
 
             if progress:
-                progress.start_check(check.name)
-            try:
-                res = check.run(file, context=context, progress=progress)
-            except Exception as e:
-                res = CheckResult(status='fail', message=f'Check crashed: {e}')
-
-            if progress:
-                progress.finish_check()
+                progress.finish_check(status=res.status)
 
             file_results[check.name] = res
             logger.debug('check_done', extra={'extra_data': {

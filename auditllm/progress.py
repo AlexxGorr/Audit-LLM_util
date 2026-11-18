@@ -2,6 +2,8 @@
 import sys
 import time
 
+from auditllm.utils import format_size
+
 
 class ProgressReporter:
     def __init__(self, enabled: bool = True, use_tty: bool | None = None):
@@ -25,6 +27,10 @@ class ProgressReporter:
 
         self._last_draw: float = 0.0
         self._current_check: str = ""
+        self._check_start_time: float = 0.0
+        self._total_bytes: int = 0
+        self._done_bytes: int = 0
+        self._check_printed: bool = False
 
     def start(self, files: list[tuple[str, int]]) -> None:
         """Начать прогресс. files = [(name, size_bytes), ...]."""
@@ -32,6 +38,8 @@ class ProgressReporter:
             return
         self._files = files
         self._start_time = time.monotonic()
+        self._total_bytes = sum(size for _, size in files)
+        self._done_bytes = 0
         if not self.use_tty:
             return
 
@@ -54,9 +62,10 @@ class ProgressReporter:
             return
         self._current_check = check_name
         self._current_bytes = 0
-        # _file_start_time НЕ сбрасываем — общее время файла
+        self._check_start_time = time.monotonic()
         self._last_draw = time.monotonic()
-        if self.use_tty:
+        # бар — только для читающих проверок (hash)
+        if self.use_tty and check_name == "hash":
             self._draw()
 
     DRAW_INTERVAL = 0.1  # 100 мс
@@ -65,6 +74,7 @@ class ProgressReporter:
         if not self.enabled:
             return
         self._current_bytes += n_bytes
+        self._done_bytes += n_bytes
         if self.use_tty:
             now = time.monotonic()
             if now - self._last_draw >= self.DRAW_INTERVAL:
@@ -75,10 +85,13 @@ class ProgressReporter:
         """Завершить текущий файл."""
         if not self.enabled:
             return
+        if self._current_bytes == 0 and self._current_size > 0:
+            self._done_bytes += self._current_size
         if self.use_tty:
-            # Нарисовать финальное состояние (100%) с итоговым временем файла
-            self._draw()
-            print()
+            if not self._check_printed:
+                self._draw()
+                print()
+            print()  # разделитель между файлами
         else:
             print(self._render_line())
 
@@ -89,14 +102,41 @@ class ProgressReporter:
         if self.use_tty:
             print('\r\033[K', end='')
 
-    def finish_check(self) -> None:
-        """Завершить текущую проверку (заполнить до 100%)."""
+    def finish_check(self, status: str = "pass") -> None:
+        """Завершить текущую проверку."""
         if not self.enabled:
             return
-        self._current_bytes = self._current_size
-        self._last_draw = time.monotonic()
-        if self.use_tty:
-            self._draw()
+
+        check_elapsed = (
+            time.monotonic() - self._check_start_time
+            if self._check_start_time else 0
+        )
+        if self._current_check:
+            if check_elapsed < 1.0:
+                dur_str = f"{int(check_elapsed * 1000)} ms"
+            else:
+                dur_str = f"{check_elapsed:.1f}s"
+
+            marker = {
+                "pass": "✓",
+                "warn": "?",
+                "fail": "✗",
+                "skip": "-",
+            }.get(status, "?")
+
+            self._current_bytes = self._current_size
+            # бар — только для hash
+            if self.use_tty and self._current_check == "hash":
+                self._draw()
+                print()
+            print(f"  [{marker}] {self._current_check:<10} {status:<6} {dur_str:>8}")
+            self._check_printed = True
+            self._last_draw = time.monotonic()
+        else:
+            self._current_bytes = self._current_size
+            self._last_draw = time.monotonic()
+            if self.use_tty:
+                self._draw()
 
     def cancel(self) -> None:
         """Пометить как отменённый."""
@@ -115,21 +155,39 @@ class ProgressReporter:
         percent = self._current_bytes / self._current_size if self._current_size else 0
         filled = int(percent * 40)
         bar = "#" * filled + "." * (40 - filled)
-
         pct = f"{int(percent * 100):>3}%"
 
-        # Elapsed — общее время файла (от начала файла, не проверки)
-        elapsed_sec = time.monotonic() - self._file_start_time
-
-        # Скорость — текущей проверки (байты / время файла)
-        speed_bps = self._current_bytes / elapsed_sec if elapsed_sec > 0 else 0
+        check_elapsed = (
+            time.monotonic() - self._check_start_time
+            if self._check_start_time else 0
+        )
+        speed_bps = self._current_bytes / check_elapsed if check_elapsed > 0 else 0
         speed_str = self._format_speed(speed_bps)
 
-        elapsed_str = self._format_eta(elapsed_sec)
+        file_elapsed = time.monotonic() - self._file_start_time
+        elapsed_str = self._format_eta(file_elapsed)
+        if percent > 0 and file_elapsed > 0:
+            eta = file_elapsed * (1 - percent) / percent
+            eta_str = self._format_eta(eta)
+        else:
+            eta_str = "--:--"
 
-        prefix = f"  [{self._current_index + 1}/{len(self._files)}] "
-        check_part = f" | {self._current_check}" if self._current_check else ""
-        return f"{prefix}{name_padded} [{bar}] {pct}{check_part} | {speed_str} | {elapsed_str}"
+        total_pct = (
+            f"{self._done_bytes / self._total_bytes * 100:.0f}%"
+            if self._total_bytes else "?"
+        )
+        # две колонки фиксированной ширины
+        file_part = f"[{self._current_index + 1}/{len(self._files)}]".ljust(8)
+        bytes_part = (
+            f"[{format_size(self._done_bytes)}/{format_size(self._total_bytes)}, {total_pct}]"
+        ).ljust(26)
+
+        prefix = f"  {file_part} {bytes_part} "
+        check_part = f" | {self._current_check:<6}" if self._current_check else " | " + " " * 6
+        return (
+            f"{prefix}{name_padded} [{bar}] {pct}{check_part} | "
+            f"{speed_str} | {elapsed_str} / ETA {eta_str}"
+        )
 
     def _draw(self):
         line = self._render_line()
