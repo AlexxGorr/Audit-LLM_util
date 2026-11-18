@@ -605,7 +605,15 @@ def cmd_list(
             "in_etalon": in_etalon,
         })
 
-    models.sort(key=lambda x: x["path"])
+    # 4.4: сортировка — здоровые сверху, требующие внимания внизу
+    def _sort_key(m):
+        if not m["present"]:
+            return (2, m["path"])  # мёртвые — вниз
+        if not m["in_etalon"]:
+            return (1, m["path"])  # на диске, не в эталоне — середина
+        return (0, m["path"])  # здоровые — вверх
+
+    models.sort(key=_sort_key)
     present_count = sum(1 for m in models if m["present"])
     summary = {
         "total": len(models),
@@ -666,7 +674,9 @@ def cmd_inbox(
             "in_etalon": in_etalon,
         })
 
-    models.sort(key=lambda x: x["path"])
+    # 4.4: сортировка — verified сверху, new внизу
+    REGISTRY_ORDER = {"verified": 0, "modified": 1, "new": 2}
+    models.sort(key=lambda m: (REGISTRY_ORDER.get(m["registry_status"], 9), m["path"]))
 
     summary = {
         "total": len(models),
@@ -1614,7 +1624,8 @@ def run_checks(
             logger.debug('check_done', extra={'extra_data': {
                 'path': str(relative),
                 'check': check.name,
-                'status': res.status
+                'status': res.status,
+                'duration_ms': res.duration_ms,
             }})
         result[str(relative)] = file_results
         if progress:
