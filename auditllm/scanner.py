@@ -15,16 +15,26 @@ EXCLUDE_DIR_NAMES = {
     ".ruff_cache",
 }
 
+EXCLUDE_PATTERNS = {".git", "__pycache__", ".venv", "node_modules",
+                    ".mypy_cache", ".pytest_cache", ".ruff_cache"}
+EXCLUDE_GLOBS = {"*.tmp", "*.lock", "*.log", "*.pyc", "*.pyo"}
+
+MIN_SIZE = 1 * 1024 * 1024  # H3: 1 МБ
+
 
 def find_model_files(
     directory: Path,
     exclude_dirs: list[Path] | None = None,
+    min_size: int = MIN_SIZE,
+    include_ext: set[str] | None = None,
+    exclude_ext: set[str] | None = None,
 ) -> list[Path]:
     """Рекурсивно находит все файлы моделей в директории.
 
     Args:
         directory: корневая папка для поиска
         exclude_dirs: папки, которые нужно исключить (например, quarantine)
+        min_size: минимальный размер файла в байтах (H3, по умолчанию 1 МБ)
 
     Returns:
         Отсортированный список путей к файлам моделей.
@@ -32,8 +42,13 @@ def find_model_files(
     if not directory.is_dir():
         return []
 
-    extensions = all_supported_extensions()
-    exclude_dirs = exclude_dirs or []
+    # H1: расширения, которые сканируем (даже если нет header-проверки)
+    EXTRA_EXTENSIONS = {".onnx", ".h5", ".ggml", ".tflite", ".msgpack"}
+    extensions = all_supported_extensions() | EXTRA_EXTENSIONS
+    if include_ext:
+        extensions = extensions & include_ext
+    if exclude_ext:
+        extensions = extensions - exclude_ext
 
     # b3: резолвим без is_dir() — карантин может ещё не существовать
     exclude_resolved: set[Path] = set()
@@ -64,6 +79,17 @@ def find_model_files(
                 continue
             if any(file_resolved.is_relative_to(excl) for excl in exclude_resolved):
                 continue
+
+        # H3: отсекаем мелкие файлы
+        try:
+            if file_path.stat().st_size < min_size:
+                continue
+        except OSError:
+            continue
+
+        # H4: отсекаем по glob-паттернам
+        if any(file_path.match(pat) for pat in EXCLUDE_GLOBS):
+            continue
 
         results.append(file_path)
 

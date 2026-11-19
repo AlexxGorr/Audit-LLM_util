@@ -2,10 +2,14 @@ from auditllm.checks.base import Check, CheckResult
 from auditllm.checks.hash_check import HashCheck
 from auditllm.checks.header_check import HeaderCheck
 from auditllm.checks.pickle_check import PickleCheck
+from auditllm.checks.magic_check import MagicCheck
+
+
 
 # Реестр: имя → класс
 REGISTRY: dict[str, type[Check]] = {
     "hash": HashCheck,
+    "magic": MagicCheck,
     "header": HeaderCheck,
     "pickle": PickleCheck,
 }
@@ -75,6 +79,7 @@ __all__ = [
     "Check",
     "CheckResult",
     "HashCheck",
+    "MagicCheck",
     "HeaderCheck",
     "PickleCheck",
     "REGISTRY",

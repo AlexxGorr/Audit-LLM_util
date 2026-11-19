@@ -4,7 +4,7 @@
 """
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -26,6 +26,9 @@ class Config:
     etalon_path: Path
     log_path: Path
     state_path: Path
+    include_ext: set[str] = field(default_factory=set)
+    exclude_ext: set[str] = field(default_factory=set)
+    min_size: int = 1 * 1024 * 1024
 
 
 def load_config(
@@ -49,8 +52,10 @@ def load_config(
         with open(config_path, "rb") as f:
             toml_data = tomllib.load(f)
         paths = toml_data.get("paths", {})
+        scanner = toml_data.get("scanner", {})  # H5
     else:
         paths = {}
+        scanner = {}
 
     # Для каждого пути: CLI > TOML > default
     resolved_models = models_dir or (
@@ -72,6 +77,9 @@ def load_config(
         etalon_path=etalon_path,
         log_path=log_path,
         state_path=state_path,
+        include_ext=set(scanner.get("include_ext", [])),
+        exclude_ext=set(scanner.get("exclude_ext", [])),
+        min_size=int(scanner.get("min_size", 1 * 1024 * 1024)),
     )
 
 

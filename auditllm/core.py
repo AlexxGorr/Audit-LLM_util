@@ -178,7 +178,7 @@ def cmd_init(
         config: Config,
         logger: logging.Logger,
         key: bytes,
-        progress: "ProgressReporter | None" = None
+        progress: "ProgressReporter | None" = None,
 ) -> int:
     """Создаёт эталон. Возвращает код выхода."""
     if config.etalon_path.exists():
@@ -200,6 +200,9 @@ def cmd_init(
         etalon=None,
         progress=progress,
         exclude_dirs=[config.quarantine_dir],
+        min_size=config.min_size,
+        include_ext=config.include_ext,
+        exclude_ext=config.exclude_ext,
     )
     for path, checks_res in results.items():
         hash_res = checks_res.get("hash")
@@ -299,6 +302,9 @@ def cmd_audit(
         progress=progress,
         exclude_dirs=[config.quarantine_dir],
         files=files_to_scan,
+        min_size=config.min_size,
+        include_ext=config.include_ext,
+        exclude_ext=config.exclude_ext,
     )
 
     new_state = build_state(results, config.models_dir)
@@ -644,7 +650,12 @@ def cmd_inbox(
         }})
         return 1
 
-    files = find_model_files(config.models_dir, exclude_dirs=[config.quarantine_dir])
+    files = find_model_files(
+        config.models_dir, exclude_dirs=[config.quarantine_dir],
+        min_size=config.min_size,
+        include_ext=config.include_ext,
+        exclude_ext=config.exclude_ext,
+    )
     state = load_state(config.state_path)
     etalon = load_hashes_unverified(config.etalon_path)
 
@@ -1576,6 +1587,9 @@ def run_checks(
     progress: "ProgressReporter | None" = None,
     exclude_dirs: list[Path] | None = None,
     files: list[Path] | None = None,
+    min_size: int = 1 * 1024 * 1024,
+    include_ext: set[str] | None = None,
+    exclude_ext: set[str] | None = None,
 ) -> dict:
     """Запускает проверки для всех файлов. Возвращает {path: {check_name: CheckResult}}."""
     if not models_dir.is_dir():
@@ -1584,7 +1598,12 @@ def run_checks(
         }})
         raise FileNotFoundError(f'Файл не найден: {models_dir}')
     if files is None:
-        files = find_model_files(models_dir, exclude_dirs=exclude_dirs)
+        files = find_model_files(
+            models_dir, exclude_dirs=exclude_dirs,
+            min_size=min_size,
+            include_ext=include_ext,
+            exclude_ext=exclude_ext,
+        )
     if not files:
         logger.warning('no_models_found', extra={'extra_data': {
             'path': str(models_dir)

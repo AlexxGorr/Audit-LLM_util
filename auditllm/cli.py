@@ -90,9 +90,30 @@ def init(
         help="Подробный вывод",
         rich_help_panel="Output",
     ),
+    min_size: int = typer.Option(
+        1 * 1024 * 1024, "--min-size",
+        help="Минимальный размер файла (байт)",
+        rich_help_panel="Scanner",
+    ),
+    include_ext: list[str] = typer.Option(
+        [], "--include-ext",
+        help="Только указанные расширения (например, .gguf)",
+        rich_help_panel="Scanner",
+    ),
+    exclude_ext: list[str] = typer.Option(
+        [], "--exclude-ext",
+        help="Исключить указанные расширения",
+        rich_help_panel="Scanner",
+    ),
 ):
     """Создать эталон: запомнить хеши всех моделей в папке."""
     config, logger, key = _prepare(config_path, models_dir, data_dir, quarantine_dir, verbose)
+    if min_size != 1 * 1024 * 1024:
+        config.min_size = min_size
+    if include_ext:
+        config.include_ext = set(include_ext)
+    if exclude_ext:
+        config.exclude_ext = set(exclude_ext)
     progress = _make_progress(no_progress=no_progress)
     try:
         if progress.enabled and progress.use_tty:
@@ -174,6 +195,21 @@ def audit(
         help="Подробный вывод",
         rich_help_panel="Output",
     ),
+    min_size: int = typer.Option(
+        1 * 1024 * 1024, "--min-size",
+        help="Минимальный размер файла (байт)",
+        rich_help_panel="Scanner",
+    ),
+    include_ext: list[str] = typer.Option(
+        [], "--include-ext",
+        help="Только указанные расширения (например, .gguf)",
+        rich_help_panel="Scanner",
+    ),
+    exclude_ext: list[str] = typer.Option(
+        [], "--exclude-ext",
+        help="Исключить указанные расширения",
+        rich_help_panel="Scanner",
+    ),
 ):
     """Запустить аудит: сравнить модели с эталоном."""
     if check and "hash" not in check:
@@ -193,6 +229,12 @@ def audit(
         )
         raise typer.Exit(1)
     config, logger, key = _prepare(config_path, models_dir, data_dir, quarantine_dir, verbose)
+    if min_size != 1 * 1024 * 1024:
+        config.min_size = min_size
+    if include_ext:
+        config.include_ext = set(include_ext)
+    if exclude_ext:
+        config.exclude_ext = set(exclude_ext)
     progress = _make_progress(no_progress=no_progress)
     try:
         if progress.enabled and progress.use_tty:
@@ -408,6 +450,21 @@ def inbox(
         help="Подробный вывод",
         rich_help_panel="Output",
     ),
+    min_size: int = typer.Option(
+        1 * 1024 * 1024, "--min-size",
+        help="Минимальный размер файла (байт)",
+        rich_help_panel="Scanner",
+    ),
+    include_ext: list[str] = typer.Option(
+        [], "--include-ext",
+        help="Только указанные расширения (например, .gguf)",
+        rich_help_panel="Scanner",
+    ),
+    exclude_ext: list[str] = typer.Option(
+        [], "--exclude-ext",
+        help="Исключить указанные расширения",
+        rich_help_panel="Scanner",
+    ),
 ):
     """Показать файлы в папке моделей (транзитная папка inbox).
 
@@ -415,6 +472,12 @@ def inbox(
     и связывает с реестром (models_state.json).
     """
     config, logger, _ = _prepare(config_path, models_dir, data_dir, quarantine_dir, verbose)
+    if min_size != 1 * 1024 * 1024:
+        config.min_size = min_size
+    if include_ext:
+        config.include_ext = set(include_ext)
+    if exclude_ext:
+        config.exclude_ext = set(exclude_ext)
     raise typer.Exit(cmd_inbox(config, logger, as_json=as_json, new_only=new_only))
 
 
