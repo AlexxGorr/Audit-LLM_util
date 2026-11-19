@@ -21,7 +21,7 @@ class PickleCheck(Check):
 
     # Опасные модули (blocklist — НЕ полный!)
     DANGEROUS_CATEGORIES = {
-        # System calls
+        # ─── System calls ────────────────────────────────
         "os": "system calls",
         "posix": "system calls",
         "nt": "system calls",
@@ -29,9 +29,9 @@ class PickleCheck(Check):
         "commands": "shell commands",
         "popen2": "process spawn",
 
-        # Code execution
+        # ─── Code execution ──────────────────────────────
         "builtins": "arbitrary eval/exec",
-        "__builtin__": "arbitrary eval/exec",
+        "__builtin__": "arbitrary eval/exec",  # ← NEW (Python 2)
         "eval": "arbitrary eval",
         "exec": "arbitrary exec",
         "runpy": "code execution",
@@ -41,7 +41,7 @@ class PickleCheck(Check):
         "compile": "code compilation",
         "compileall": "code compilation",
 
-        # Network
+        # ─── Network ─────────────────────────────────────
         "socket": "network access",
         "urllib": "network access",
         "http": "network access",
@@ -50,14 +50,14 @@ class PickleCheck(Check):
         "smtplib": "network access",
         "requests": "network access",
 
-        # File system
+        # ─── File system ─────────────────────────────────
         "shutil": "file manipulation",
         "fileinput": "file manipulation",
         "tempfile": "file manipulation",
         "pathlib": "file manipulation",
         "glob": "file manipulation",
 
-        # Process/terminal
+        # ─── Process/terminal ────────────────────────────
         "pty": "terminal control",
         "tty": "terminal control",
         "termios": "terminal control",
@@ -65,12 +65,13 @@ class PickleCheck(Check):
         "sys": "interpreter internals",
         "gc": "interpreter internals",
 
-        # Serialization (может рекурсивно)
+        # ─── Serialization (recursive) ───────────────────
         "pickle": "recursive pickle",
         "dill": "recursive pickle",
         "joblib": "recursive pickle",
+        "marshal": "serialization internals",  # ← NEW
 
-        # Misc dangerous
+        # ─── Misc dangerous ──────────────────────────────
         "webbrowser": "browser control",
         "ctypes": "native code",
         "cffi": "native code",
@@ -78,6 +79,13 @@ class PickleCheck(Check):
         "threading": "thread manipulation",
         "signal": "signal manipulation",
         "resource": "resource manipulation",
+
+        # ─── CVE-2025-71366: torch bottleneck ───────────
+        "torch.utils.bottleneck.__main__": "code execution",  # ← NEW
+
+        # ─── modelscan bypass: distutils.spawn ───────────
+        "distutils": "process spawn",  # ← NEW
+        "distutils.spawn": "process spawn",  # ← NEW
     }
 
     # Pickle magic byte (protocol 2+)
@@ -181,14 +189,15 @@ class PickleCheck(Check):
             "SHORT_BINUNICODE", "BINUNICODE", "UNICODE",
             "BINUNICODE8", "SHORT_BINSTRING", "BINSTRING", "STRING",
         }
+        last_was_reduce = False
 
         try:
             for opcode, arg, pos in pickletools.genops(f):
                 name = opcode.name
 
-                # Добавить в disassembly
+                # Добавить в disassembly (c6: лимит 1000)
                 arg_repr = repr(arg) if arg is not None else ""
-                if len(result["disassembly"]) < 1000:  # c6: лимит памяти
+                if len(result["disassembly"]) < 1000:
                     result["disassembly"].append({
                         "pos": pos,
                         "opcode": name,
@@ -200,44 +209,91 @@ class PickleCheck(Check):
                     if len(string_stack) > 10:
                         string_stack.pop(0)
 
+
                 elif name == "GLOBAL":
                     if arg:
-                        module = arg.split(".")[0]
-                        if module in self.DANGEROUS_CATEGORIES:
-                            result["dangerous"].append({
-                                "module": arg,
-                                "category": self.DANGEROUS_CATEGORIES[module],
-                                "pos": pos,
-                            })
+                        # pickletools возвращает "module name" (с пробелом) или (module, name)
+                        if isinstance(arg, tuple):
+                            module, name_attr = arg
+                            full = f"{module}.{name_attr}"
+                        else:
+                            # строка "module name" → "module.name"
+                            full = arg.replace(" ", ".")
+                        matched = False
+                        for key, category in self.DANGEROUS_CATEGORIES.items():
+                            if full == key or full.startswith(key + "."):
+                                result["dangerous"].append({
+                                    "module": full,
+                                    "category": category,
+                                    "pos": pos,
+                                })
+                                matched = True
+                                break
+                        if not matched:
+                            module = full.split(".")[0]
+                            if module in self.DANGEROUS_CATEGORIES:
+                                result["dangerous"].append({
+                                    "module": full,
+                                    "category": self.DANGEROUS_CATEGORIES[module],
+                                    "pos": pos,
+                                })
 
                 elif name == "STACK_GLOBAL":
                     if len(string_stack) >= 2:
                         module = string_stack[-2]
                         attr = string_stack[-1]
                         full = f"{module}.{attr}"
-                        if module in self.DANGEROUS_CATEGORIES:
-                            result["dangerous"].append({
-                                "module": full,
-                                "category": self.DANGEROUS_CATEGORIES[module],
-                                "pos": pos,
-                            })
-                        else:
-                            result["warnings"].append({
-                                "type": "import",
-                                "message": f"imports {full}",
-                                "pos": pos,
-                            })
+                        matched = False
+                        for key, category in self.DANGEROUS_CATEGORIES.items():
+                            if full == key or full.startswith(key + "."):
+                                result["dangerous"].append({
+                                    "module": full,
+                                    "category": category,
+                                    "pos": pos,
+                                })
+                                matched = True
+                                break
+                        if not matched:
+                            if module in self.DANGEROUS_CATEGORIES:
+                                result["dangerous"].append({
+                                    "module": full,
+                                    "category": self.DANGEROUS_CATEGORIES[module],
+                                    "pos": pos,
+                                })
+                            else:
+                                result["warnings"].append({
+                                    "type": "import",
+                                    "message": f"imports {full}",
+                                    "pos": pos,
+                                })
                         string_stack = string_stack[:-2]
                     else:
-                        # c4: не warning — protocol 4+ часто использует memo,
-                        # который мы не отслеживаем. Это не сигнал опасности.
-                        pass
+                        # STACK_GLOBAL без резолва — подозрительно (obfuscation),
+                        # но protocol 4+ может использовать memo (ложный warn)
+                        result["warnings"].append({
+                            "type": "obfuscated_import",
+                            "message": "STACK_GLOBAL without resolvable stack (possible obfuscation)",
+                            "pos": pos,
+                        })
 
                 elif name == "REDUCE":
                     result["reduce_count"] += 1
+                    last_was_reduce = True
+
+                elif name == "BUILD" and last_was_reduce:
+                    result["warnings"].append({
+                        "type": "reduce_build",
+                        "message": "BUILD after REDUCE (possible bypass)",
+                        "pos": pos,
+                    })
+                    last_was_reduce = False
 
                 elif name in ("POP", "POP_MARK"):
                     string_stack = string_stack[:-1] if string_stack else []
+
+                # Сброс last_was_reduce после любого другого opcode
+                if name not in ("REDUCE", "BUILD"):
+                    last_was_reduce = False
 
         except Exception as e:
             result["warnings"].append({
