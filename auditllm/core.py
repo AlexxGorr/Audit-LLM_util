@@ -74,11 +74,10 @@ def compare_states(old: dict, new: dict) -> dict:
 # ─── Отчёт ──────────────────────────────────────────────
 def print_report(diff: dict, results: dict) -> None:
     """Печатает отчёт: целостность + проверки безопасности."""
-    line = "=" * 55
+    line = "=" * 60
     print(line)
-    print("ОТЧЁТ АУДИТА".center(55))
+    print("ОТЧЁТ АУДИТА".center(60))
     print(line)
-    print()
 
     unchanged = len(diff["unchanged"])
     modified = len(diff["modified"])
@@ -833,6 +832,7 @@ def cmd_inspect(
         all_files: bool = False,
         check_names: list[str] | None = None,
         as_json: bool = False,
+        search: str | None = None,
 ) -> int:
     """Просмотр файлов без сохранения. Возвращает код выхода."""
     if all_files:
@@ -911,6 +911,31 @@ def cmd_inspect(
                 file_res["checks"][check.name] = res
 
             results.append(file_res)
+
+    # F2: ручной анализ (поиск по metadata/opcodes)
+    if search:
+        print(f"\n🔍 Поиск: {search!r}\n")
+        search_lower = search.lower()
+        found_any = False
+        for file_res in results:
+            for check_name, check_res in file_res.get("checks", {}).items():
+                details = check_res.details if hasattr(check_res, "details") else {}
+                if check_name == "header":
+                    metadata = details.get("metadata", {})
+                    for key, value in metadata.items():
+                        if search_lower in str(key).lower() or search_lower in str(value).lower():
+                            print(f"  header: {key} = {value}")
+                            found_any = True
+                elif check_name == "pickle":
+                    for item in details.get("disassembly", []):
+                        arg = str(item.get("arg", ""))
+                        opcode = str(item.get("opcode", ""))
+                        if search_lower in arg.lower() or search_lower in opcode.lower():
+                            print(f"  pickle: {opcode} {arg} (pos {item.get('pos')})")
+                            found_any = True
+        if not found_any:
+            print("  (ничего не найдено)")
+        return 0
 
     if as_json:
         _print_inspect_json(results)

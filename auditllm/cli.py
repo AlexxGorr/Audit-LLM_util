@@ -18,9 +18,20 @@ from auditllm.core import (
 
 app = typer.Typer(
     name="auditllm",
-    help="Аудит локальных LLM: проверка целостности файлов моделей",
+    help="Audit LLM — аудит локальных LLM: целостность, безопасность, репутация",
     no_args_is_help=True,
+    rich_markup_mode="rich",
 )
+
+
+@app.callback()
+def main():
+    """
+    [bold blue]Audit LLM[/bold blue] v0.1.0
+
+    Аудит локальных LLM: проверка целостности, безопасности и репутации.
+    """
+    pass
 
 
 def _prepare(
@@ -517,8 +528,14 @@ def inspect(
     show: list[str] | None = typer.Option(
         None, "--show",
         help="Проверки для показа. "
-             "По умолчанию: header, pickle (быстрые). "
+             "По умолчанию: header, magic, pickle (быстрые). "
              "Для hash: --show hash (медленно — читает весь файл).",
+        rich_help_panel="Inspect Behavior",
+    ),
+    search: str | None = typer.Option(
+        None, "--search",
+        help="Ручной анализ: поиск по metadata (header) и opcodes (pickle). "
+             "Пример: --search 'llama'",
         rich_help_panel="Inspect Behavior",
     ),
     as_json: bool = typer.Option(
@@ -552,13 +569,15 @@ def inspect(
         rich_help_panel="Output",
     ),
 ):
-    """Показать содержимое файлов (без сохранения в реестр).
+    """Ручной анализ файлов (без сохранения в реестр).
 
     Запускает проверки для указанных файлов и показывает результат.
     Не изменяет models_state.json, не перемещает в карантин.
 
-    По умолчанию запускает БЫСТРЫЕ проверки (header, pickle).
+    По умолчанию запускает БЫСТРЫЕ проверки (header, magic, pickle).
     Для проверки хеша используй --show hash (читает весь файл).
+
+    Для поиска по metadata/opcodes используй --search PATTERN.
     """
     if not paths and not all_files:
         typer.echo("🚨 Укажи файлы или --all", err=True)
@@ -571,6 +590,7 @@ def inspect(
         all_files=all_files,
         check_names=show,
         as_json=as_json,
+        search=search,
     ))
 
 
