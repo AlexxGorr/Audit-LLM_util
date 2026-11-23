@@ -806,6 +806,7 @@ def _print_trust_table(result):
     print(f"  Model card:   {'✓' if result.has_model_card else '✗'}")
     print(f"  Files:        {result.files_count}")
     print(f"  Gated:        {result.gated}")
+    print(f"  Security:     {result.security_status}")
     print()
 
     print(f"  Trust score:  {result.trust_score}/100")
@@ -842,6 +843,7 @@ def _print_trust_json(result):
         "has_model_card": result.has_model_card,
         "files_count": result.files_count,
         "trust_score": result.trust_score,
+        "security_status": result.security_status,
         "reasons": result.reasons,
         "duration_ms": result.duration_ms,
         "error": result.error,

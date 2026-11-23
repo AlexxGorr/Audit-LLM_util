@@ -37,6 +37,7 @@ class TrustResult:
     error: str = ""
     duration_ms: int = 0
     gated: str = ''
+    security_status: str = "unknown"  # F3: "safe", "unsafe", "unverified", "unknown"
 
 
 def check_trust(
@@ -62,7 +63,7 @@ def check_trust(
 
         # 1. HTTP-запрос
         try:
-            url = f"{HF_API}/{repo_id}"
+            url = f"{HF_API}/{repo_id}?securityStatus=true"
             response = requests.get(url, timeout=timeout)
         except requests.RequestException as e:
             result.error = f"Request failed: {e}"
@@ -103,6 +104,20 @@ def check_trust(
     filenames = {s.get("rfilename", "") for s in siblings}
     result.has_model_card = "README.md" in filenames
 
+    # F3: security status из HF API (securityStatus=true)
+    security = data.get("securityRepoStatus", {}) or {}
+    if security:
+        scans_done = security.get("scansDone", False)
+        files_with_issues = security.get("filesWithIssues", [])
+        if not scans_done:
+            result.security_status = "unknown"
+        elif files_with_issues:
+            result.security_status = "unsafe"
+        else:
+            result.security_status = "safe"
+    else:
+        result.security_status = "unknown"
+
     # 4. Score
     _compute_score(result)
 
@@ -113,6 +128,20 @@ def check_trust(
 def _compute_score(result: TrustResult) -> None:
     """Вычисляет trust_score и заполняет reasons."""
     score = 0
+
+    # F3: security status
+    if result.security_status == "unsafe":
+        score -= 50
+        result.reasons.append({
+            "text": "🚨 Security scan: UNSAFE (malware/pickle)",
+            "sign": "-",
+        })
+    elif result.security_status == "safe":
+        score += 10
+        result.reasons.append({
+            "text": "✓ Security scan: safe",
+            "sign": "+",
+        })
 
     # Автор
     result.author_official = result.author in OFFICIAL_AUTHORS
@@ -188,7 +217,7 @@ def _compute_score(result: TrustResult) -> None:
         except ValueError:
             pass
 
-    result.trust_score = min(score, 100)
+    result.trust_score = max(0, min(score, 100))
 
 
 def status_from_score(score: int) -> str:
