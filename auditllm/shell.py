@@ -32,19 +32,19 @@ COMMANDS = [
 
 HELP_TEXT = """\
 Доступные команды:
-  init                                                      Создать эталон
-  audit [--new-only] [--no-quarantine] [--update-etalon]    Запустить аудит
-  etalon update [--dry-run] [--yes] [--keep-state]          Синхронизировать эталон (--yes — для CI)
-  list [--json] [--all]                                     Реестр моделей
-  inbox [--new-only] [--json]                               Файлы в папке
-  inspect <file> [--show hash,header,pickle] [--json]       Детали файла
-  promote [<file>] [--force] [--dry-run]                    Добавить в эталон
-  report [<file>] [--json]                                  Результат аудита
-  trust <repo_id>                                           Репутация на HF
-  reset [--yes]                                             Сбросить эталон
-  config                                                    Текущие пути
-  help                                                      Эта справка
-  exit / quit                                               Выход
+  init                                                               Создать эталон
+  audit [<file>] [--new-only] [--no-quarantine] [--update-etalon]    Запустить аудит
+  etalon update [--dry-run] [--yes] [--keep-state]                   Синхронизировать эталон (--yes — для CI)
+  list [--json] [--all]                                              Реестр моделей
+  inbox [--new-only] [--json]                                        Файлы в папке
+  inspect <file> [--show hash,header,pickle] [--json]                Детали файла/Ручной анализ файла
+  promote [<file>] [--force] [--dry-run]                             Добавить в эталон
+  report [<file>] [--json]                                           Результат аудита
+  trust <repo_id>                                                    Репутация на HF
+  reset [--yes]                                                      Сбросить эталон
+  config                                                             Текущие пути
+  help                                                               Эта справка
+  exit / quit                                                        Выход
 
 Горячие клавиши:
   Ctrl+C   Прервать ввод / очистить строку
@@ -347,13 +347,47 @@ class AuditShell:
             print(f"⚠️  init завершился с кодом {code}")
 
     def _cmd_audit(self, args: list[str]) -> None:
-        """audit [--new-only] [--no-quarantine] [--update-etalon] [--allow-partial-update]"""
+        """audit [<file>] [--new-only] [--no-quarantine] [--update-etalon] [--allow-partial-update]"""
+        # F1: файл — первый аргумент, не флаг
+        file_path = None
+        if args and not args[0].startswith("--"):
+            file_path = Path(args[0])
+            args = args[1:]
+
         new_only = "--new-only" in args
         no_quarantine = "--no-quarantine" in args
         update_etalon = "--update-etalon" in args
         allow_partial_update = "--allow-partial-update" in args
 
+        if file_path is not None:
+            from auditllm.core import cmd_audit_file
+            progress = ProgressReporter(enabled=self._use_tty, use_tty=self._use_tty)
+            code = cmd_audit_file(
+                self.config, self.logger, self.key,
+                file_path,
+                no_quarantine=no_quarantine,
+                progress=progress,
+            )
+            if code != 0:
+                print(f"⚠️  audit завершился с кодом {code}")
+            return
+
         if update_etalon and new_only and not allow_partial_update:
+            print("🚨 --update-etalon с --new-only не удалит отсутствующие файлы.\n"
+                  "   Используй полный audit или добавь --allow-partial-update.")
+            return
+
+        progress = ProgressReporter(enabled=self._use_tty, use_tty=self._use_tty)
+        code = cmd_audit(
+            self.config, self.logger, self.key,
+            update_etalon=update_etalon,
+            no_quarantine=no_quarantine,
+            new_only=new_only,
+            allow_partial_update=allow_partial_update,
+            progress=progress,
+        )
+        if code != 0:
+            print(f"⚠️  audit завершился с кодом {code}")
             print("🚨 --update-etalon с --new-only не удалит отсутствующие файлы.\n"
                   "   Используй полный audit или добавь --allow-partial-update.")
             return

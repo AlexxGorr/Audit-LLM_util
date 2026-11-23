@@ -425,6 +425,124 @@ def cmd_audit(
     return 0
 
 
+def cmd_audit_file(
+    config: Config,
+    logger: logging.Logger,
+    key: bytes,
+    file_path: Path,
+    no_quarantine: bool = False,
+    check_names: list[str] | None = None,
+    progress: "ProgressReporter | None" = None,
+) -> int:
+    """Аудит одного файла. Возвращает код выхода."""
+    if not config.etalon_path.exists():
+        logger.error("etalon_not_found", extra={"extra_data": {
+            "path": str(config.etalon_path),
+            "hint": "Если это первый запуск — используй init"
+        }})
+        return 1
+
+    try:
+        old_hashes = load_hashes_verified(config.etalon_path, key)
+    except EtalonCorruptedError as e:
+        logger.error("etalon_corrupted", extra={"extra_data": {
+            "path": str(config.etalon_path),
+            "error": str(e),
+        }})
+        return 2
+    except EtalonSignatureError as e:
+        logger.error("etalon_signature_invalid", extra={"extra_data": {
+            "path": str(config.etalon_path),
+            "error": str(e),
+        }})
+        return 2
+
+    if not file_path.is_file():
+        candidate = config.models_dir / file_path
+        if candidate.is_file():
+            file_path = candidate
+        else:
+            print(f"🚨 Файл не найден: {file_path}")
+            return 1
+
+    try:
+        relative = str(file_path.relative_to(config.models_dir))
+    except ValueError:
+        relative = file_path.name
+
+    context = old_hashes.get(relative)
+
+    try:
+        checks = get_checks(check_names)
+    except ValueError as e:
+        logger.error("invalid_check", extra={"extra_data": {"error": str(e)}})
+        return 1
+
+    if progress:
+        progress.start([(file_path.name, file_path.stat().st_size)])
+        progress.start_file(0)
+
+    results = {}
+    for check in checks:
+        if progress and check.name == "hash":
+            progress.start_check(check.name)
+
+        if not check.supports(file_path):
+            res = CheckResult(
+                status="skip",
+                message=f"Not supported for {file_path.suffix}",
+            )
+        else:
+            try:
+                res = check.run(file_path, context=context, progress=progress)
+            except Exception as e:
+                res = CheckResult(status="fail", message=f"Check crashed: {e}")
+
+        if progress and check.name == "hash":
+            progress.finish_check(status=res.status)
+
+        results[check.name] = res
+
+    if progress:
+        progress.finish_file()
+        progress.finish()
+
+    # F1: обновляем state (как cmd_audit)
+    new_state = build_state({relative: results}, config.models_dir)
+    old_state = load_state(config.state_path)
+    merged_state = {**old_state, **new_state}
+    save_state(merged_state, config.state_path)
+
+    # F1: diff только для текущего файла
+    old_for_file = {relative: old_hashes[relative]} if relative in old_hashes else {}
+    new_hashes = extract_hash_size({relative: results})
+    diff = compare_states(old_for_file, new_hashes)
+    print_report(diff, {relative: results})
+
+    # Карантин
+    hash_res = results.get("hash")
+    if hash_res and hash_res.status == "fail" and not no_quarantine:
+        try:
+            quarantine_file(
+                file_path=file_path,
+                reason=hash_res.message,
+                details=hash_res.details,
+                quarantine_dir=config.quarantine_dir,
+            )
+            print(f"\n🚧 Перемещён в карантин: {file_path.name}")
+            logger.error("quarantined", extra={"extra_data": {"path": relative}})
+        except FileNotFoundError:
+            logger.error("quarantine_failed_file_gone", extra={"extra_data": {
+                "path": relative,
+            }})
+
+    if diff["modified"] or any(r.status == "fail" for r in results.values()):
+        return 2
+    if diff["added"] or diff["removed"] or any(r.status == "warn" for r in results.values()):
+        return 1
+    return 0
+
+
 def cmd_etalon_update(
     config: Config,
     logger: logging.Logger,

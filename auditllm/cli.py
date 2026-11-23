@@ -137,6 +137,10 @@ def init(
 # ─── audit ──────────────────────────────────────────────
 @app.command()
 def audit(
+    file: Path | None = typer.Argument(
+        None,
+        help="Аудит одного файла (опционально). Без аргумента — все файлы.",
+    ),
     config_path: Path | None = typer.Option(
         None, "--config",
         help="Путь к config.toml",
@@ -211,7 +215,15 @@ def audit(
         rich_help_panel="Scanner",
     ),
 ):
-    """Запустить аудит: сравнить модели с эталоном."""
+    """Запустить аудит: сравнить модели с эталоном.
+
+    Без FILE — все файлы. С FILE — один файл.
+
+    Примеры:
+      auditllm audit                    # все файлы
+      auditllm audit model.gguf         # один файл
+      auditllm audit --new-only         # только новые
+    """
     if check and "hash" not in check:
         typer.echo(
             "🚨 --check без 'hash' не поддерживается: аудит целостности "
@@ -235,6 +247,15 @@ def audit(
         config.include_ext = set(include_ext)
     if exclude_ext:
         config.exclude_ext = set(exclude_ext)
+    if file is not None:
+        from auditllm.core import cmd_audit_file
+        progress = _make_progress(no_progress=no_progress)
+        raise typer.Exit(cmd_audit_file(
+            config, logger, key, file,
+            no_quarantine=no_quarantine,
+            check_names=check,
+            progress=progress,
+        ))
     progress = _make_progress(no_progress=no_progress)
     try:
         if progress.enabled and progress.use_tty:
