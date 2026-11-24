@@ -254,15 +254,19 @@ class AuditShell:
             print(f"⚠️  etalon update завершился с кодом {code}")
 
     def _cmd_inspect(self, args: list[str]) -> None:
-        """inspect <file> [--show hash,header,pickle] [--json] [--all]"""
+        """inspect <file> [--show hash,header,pickle] [--search PATTERN] [--json] [--all]"""
         as_json = "--json" in args
         all_files = "--all" in args
         check_names = None
+        search = None
         paths = []
         i = 0
         while i < len(args):
             if args[i] == "--show" and i + 1 < len(args):
                 check_names = args[i + 1].split(",")
+                i += 2
+            elif args[i] == "--search" and i + 1 < len(args):
+                search = args[i + 1]
                 i += 2
             elif args[i].startswith("--"):
                 i += 1
@@ -278,6 +282,7 @@ class AuditShell:
             self.config, self.logger,
             paths=paths, all_files=all_files,
             check_names=check_names, as_json=as_json,
+            search=search,
         )
         if code != 0:
             print(f"⚠️  inspect завершился с кодом {code}")

@@ -1444,9 +1444,9 @@ def _print_inspect_json(results: list):
 
 
 def _print_last_audit(audit: dict) -> None:
-    line = "=" * 55
+    line = "=" * 60
     print(line)
-    print("ПОСЛЕДНИЙ АУДИТ".center(55))
+    print("ПОСЛЕДНИЙ АУДИТ".center(60))
     print(line)
     print()
 
