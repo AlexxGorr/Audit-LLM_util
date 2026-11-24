@@ -17,6 +17,8 @@ class CheckResult:
     message: str
     details: dict = field(default_factory=dict)
     duration_ms: int = 0
+    severity: str = "critical"   # C1: critical/major/minor
+    suggestion: str = ""          # C6: подсказка
 
 
 class Check(ABC):

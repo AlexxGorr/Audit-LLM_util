@@ -47,6 +47,8 @@ class HeaderCheck(Check):
             return CheckResult(
                 status="fail",
                 message=f"Header check failed: {e}",
+                severity="major",
+                suggestion=f"Проверь формат файла ({suffix}) — возможно, он повреждён или это не модель",
                 details={"error": str(e)},
                 duration_ms=int((time.monotonic() - start) * 1000),
             )
@@ -58,6 +60,8 @@ class HeaderCheck(Check):
             return CheckResult(
                 status="warn",
                 message=f"Header valid but sanity checks failed: {', '.join(failed_sanity)}",
+                severity="minor",
+                suggestion=f"Проверь поля: {', '.join(failed_sanity)} — возможна порча заголовка",
                 details=details,
                 duration_ms=int((time.monotonic() - start) * 1000),
             )

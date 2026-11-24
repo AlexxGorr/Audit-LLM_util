@@ -70,6 +70,8 @@ class MagicCheck(Check):
         return CheckResult(
             status="warn",
             message=f"Unknown magic bytes: {header[:8].hex()}",
+            severity="minor",
+            suggestion="Формат не распознан — проверь расширение или используй inspect",
             details={"magic": header[:8].hex()},
             duration_ms=duration_ms,
         )

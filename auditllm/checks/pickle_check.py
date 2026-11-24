@@ -129,6 +129,8 @@ class PickleCheck(Check):
             return CheckResult(
                 status="fail",
                 message=f"Pickle safety issues: {len(dangerous)} dangerous, {len(warnings)} warnings",
+                severity="critical",
+                suggestion="⚠️ НЕ загружай файл: возможна RCE. Удали или проверь в песочнице (inspect --search)",
                 details={
                     "dangerous": dangerous,
                     "warnings": warnings,
@@ -143,6 +145,8 @@ class PickleCheck(Check):
             return CheckResult(
                 status="warn",
                 message=f"Pickle parsed, {len(warnings)} warnings (but pickle is never fully safe)",
+                severity="minor",
+                suggestion="Проверь warnings вручную (inspect --search) — возможна обфускация",
                 details={
                     "warnings": warnings,
                     "reduce_count": reduce_count,

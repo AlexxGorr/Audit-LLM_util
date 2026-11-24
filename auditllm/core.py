@@ -136,6 +136,8 @@ def print_report(diff: dict, results: dict) -> None:
             print(f"  {check_name}:")
             for issue in sorted(failures[check_name], key=lambda x: x["path"]):
                 print(f"    - {issue['path']} — {issue['message']}")
+                if issue.get("suggestion"):
+                    print(f"      💡 {issue['suggestion']}")
         print()
 
     if warnings:
@@ -144,6 +146,8 @@ def print_report(diff: dict, results: dict) -> None:
             print(f"  {check_name}:")
             for issue in sorted(warnings[check_name], key=lambda x: x["path"]):
                 print(f"    - {issue['path']} — {issue['message']}")
+                if issue.get("suggestion"):
+                    print(f"      💡 {issue['suggestion']}")
         print()
 
     total_fails = sum(len(v) for v in failures.values())
@@ -1834,12 +1838,14 @@ def _collect_issues(results: dict) -> tuple[dict, dict]:
                 failures.setdefault(check_name, []).append({
                     "path": path,
                     "message": check_res.message,
+                    "suggestion": check_res.suggestion,   # C6
                     "details": check_res.details,
                 })
             elif check_res.status == "warn":
                 warnings.setdefault(check_name, []).append({
                     "path": path,
                     "message": check_res.message,
+                    "suggestion": check_res.suggestion,   # C6
                     "details": check_res.details,
                 })
     return failures, warnings

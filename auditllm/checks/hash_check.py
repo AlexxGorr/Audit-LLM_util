@@ -83,6 +83,8 @@ class HashCheck(Check):
             return CheckResult(
                 status="fail",
                 message="Size mismatch",
+                severity="critical",
+                suggestion="Файл повреждён или обрезан — перекачай из доверенного источника",
                 details={
                     "reason": "size_mismatch",
                     "expected": {"hash": expected_hash, "size": expected_size},
@@ -95,6 +97,8 @@ class HashCheck(Check):
             return CheckResult(
                 status="fail",
                 message="Hash mismatch",
+                severity="critical",
+                suggestion="Содержимое файла изменено — перекачай из доверенного источника",
                 details={
                     "reason": "hash_mismatch",
                     "expected": {"hash": expected_hash, "size": expected_size},
