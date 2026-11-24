@@ -22,6 +22,8 @@ class HeaderCheck(Check):
     description = "Model header validation (GGUF, safetensors)"
 
     SUPPORTED = {".gguf", ".safetensors"}
+    # H1: дополнительные форматы (без header-проверки, но находятся сканером)
+    # header-проверка для них — skip, но hash/pickle/magic — работают
 
     def supports(self, file_path: Path) -> bool:
         return file_path.suffix.lower() in self.SUPPORTED
