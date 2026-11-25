@@ -128,13 +128,23 @@ def print_report(diff: dict, results: dict) -> None:
             print(f"  {check_name:10s} {'   '.join(parts)}")
         print()
 
-    failures, warnings = _collect_issues(results)
+    critical_failures, major_failures, warnings = _collect_issues(results)
 
-    if failures:
+    if critical_failures:
         print("🚨 КРИТИЧНЫЕ ПРОБЛЕМЫ:")
-        for check_name in sorted(failures):
+        for check_name in sorted(critical_failures):
             print(f"  {check_name}:")
-            for issue in sorted(failures[check_name], key=lambda x: x["path"]):
+            for issue in sorted(critical_failures[check_name], key=lambda x: x["path"]):
+                print(f"    - {issue['path']} — {issue['message']}")
+                if issue.get("suggestion"):
+                    print(f"      💡 {issue['suggestion']}")
+        print()
+
+    if major_failures:
+        print("⚠️  ЗАМЕЧАНИЯ:")
+        for check_name in sorted(major_failures):
+            print(f"  {check_name}:")
+            for issue in sorted(major_failures[check_name], key=lambda x: x["path"]):
                 print(f"    - {issue['path']} — {issue['message']}")
                 if issue.get("suggestion"):
                     print(f"      💡 {issue['suggestion']}")
@@ -150,26 +160,29 @@ def print_report(diff: dict, results: dict) -> None:
                     print(f"      💡 {issue['suggestion']}")
         print()
 
-    total_fails = sum(len(v) for v in failures.values())
+    critical_count = sum(len(v) for v in critical_failures.values())
+    major_count = sum(len(v) for v in major_failures.values())
+    warn_count = sum(len(v) for v in warnings.values())
 
-    if modified or total_fails:
+    if modified or critical_count:
         verdict = "🚨 КРИТИЧНЫЕ ПРОБЛЕМЫ!"
         details = []
         if modified:
             details.append(f"{modified} изменённых")
-        if total_fails:
-            details.append(f"{total_fails} провалов проверок")
+        if critical_count:
+            details.append(f"{critical_count} провалов")
         print(f"ВЕРДИКТ: {verdict} ({', '.join(details)})")
-    elif added or removed or warnings:
-        verdict = "⚠️  Есть замечания"
+    elif major_count:
+        print(f"ВЕРДИКТ: ⚠️  Есть замечания ({major_count} замечаний)")
+    elif added or removed or warn_count:
         details = []
         if added:
             details.append(f"{added} добавленных")
         if removed:
             details.append(f"{removed} удалённых")
-        if warnings:
-            details.append(f"{sum(len(v) for v in warnings.values())} предупреждений")
-        print(f"ВЕРДИКТ: {verdict} ({', '.join(details)})")
+        if warn_count:
+            details.append(f"{warn_count} предупреждений")
+        print(f"ВЕРДИКТ: ⚠️  Есть замечания ({', '.join(details)})")
     else:
         print("ВЕРДИКТ: ✅ Все файлы соответствуют эталону")
 
@@ -352,6 +365,7 @@ def cmd_audit(
                 }})
 
     critical_check_failed = False
+    major_check_failed = False
     for path, checks_res in results.items():
         for check_name, check_res in checks_res.items():
             if check_res.status == "fail":
@@ -359,8 +373,12 @@ def cmd_audit(
                     "path": path,
                     "check": check_name,
                     "message": check_res.message,
+                    "severity": check_res.severity,
                 }})
-                critical_check_failed = True
+                if check_res.severity == "critical":
+                    critical_check_failed = True
+                elif check_res.severity == "major":
+                    major_check_failed = True
 
     for path in diff["added"]:
         logger.info("file_added", extra={"extra_data": {"path": path}})
@@ -423,7 +441,7 @@ def cmd_audit(
 
     if diff["modified"] or critical_check_failed:
         return 2
-    if diff["added"] or diff["removed"]:
+    if diff["added"] or diff["removed"] or major_check_failed:
         return 1
     return 0
 
@@ -539,9 +557,19 @@ def cmd_audit_file(
                 "path": relative,
             }})
 
-    if diff["modified"] or any(r.status == "fail" for r in results.values()):
+    critical_failed = any(
+        r.status == "fail" and r.severity == "critical"
+        for r in results.values()
+    )
+    major_failed = any(
+        r.status == "fail" and r.severity == "major"
+        for r in results.values()
+    )
+    if diff["modified"] or critical_failed:
         return 2
-    if diff["added"] or diff["removed"] or any(r.status == "warn" for r in results.values()):
+    if diff["added"] or diff["removed"] or major_failed or any(
+            r.status == "warn" for r in results.values()
+    ):
         return 1
     return 0
 
@@ -1829,26 +1857,28 @@ def _aggregate_checks(results: dict) -> dict:
     return agg
 
 
-def _collect_issues(results: dict) -> tuple[dict, dict]:
-    failures = {}
+def _collect_issues(results: dict) -> tuple[dict, dict, dict]:
+    critical_failures = {}
+    major_failures = {}
     warnings = {}
     for path, checks_res in results.items():
         for check_name, check_res in checks_res.items():
             if check_res.status == "fail":
-                failures.setdefault(check_name, []).append({
+                bucket = major_failures if check_res.severity == "major" else critical_failures
+                bucket.setdefault(check_name, []).append({
                     "path": path,
                     "message": check_res.message,
-                    "suggestion": check_res.suggestion,   # C6
+                    "suggestion": check_res.suggestion,
                     "details": check_res.details,
                 })
             elif check_res.status == "warn":
                 warnings.setdefault(check_name, []).append({
                     "path": path,
                     "message": check_res.message,
-                    "suggestion": check_res.suggestion,   # C6
+                    "suggestion": check_res.suggestion,
                     "details": check_res.details,
                 })
-    return failures, warnings
+    return critical_failures, major_failures, warnings
 
 
 def _resolve_path(path: Path, models_dir: Path) -> Path | None:
