@@ -14,6 +14,7 @@ from auditllm.checks.pickle_scan.rules import (
     RuleEngine,
     Severity,
 )
+from auditllm.checks.pickle_scan.verdict import VerdictAggregator
 
 __all__ = [
     "ContainerWalker",
@@ -27,7 +28,7 @@ __all__ = [
     "HARD_BLOCK",
     "SOFT_MODULES_MAJOR",
     "SOFT_MODULES_MINOR",
+    "VerdictAggregator",
 ]
-
 
 
