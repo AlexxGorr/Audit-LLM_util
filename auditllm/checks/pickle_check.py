@@ -1,10 +1,10 @@
 """Статический анализ pickle-файлов (без выполнения)."""
 import time
-import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from auditllm.checks.base import Check, CheckResult
+from auditllm.checks.pickle_scan.container_walker import ContainerWalker
 from auditllm.checks.pickle_scan.opcode_emulator import OpcodeEmulator
 
 if TYPE_CHECKING:
@@ -16,10 +16,16 @@ class PickleCheck(Check):
     description = "Static pickle safety scan (no execution)"
 
     # Форматы, которые могут содержать pickle
-    SUPPORTED = {".pkl", ".pickle", ".pt", ".pth", ".bin", ".ckpt", ".joblib", ".dill"}
-
-    # Pickle magic byte (protocol 2+)
-    PICKLE_MAGIC = 0x80
+    SUPPORTED = {
+        # «сырой» pickle
+        ".pkl", ".pickle", ".joblib", ".dill",
+        # PyTorch / чекпоинты (ZIP)
+        ".pt", ".pth", ".bin", ".ckpt",
+        # Контейнеры (ContainerWalker)
+        ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z",
+        # NumPy
+        ".npy", ".npz",
+    }
 
     # Ограничение чтения одного потока (защита от раздутых data.pkl)
     MAX_PICKLE_STREAM_BYTES = 50 * 1024 * 1024  # 50 MB
@@ -69,14 +75,12 @@ class PickleCheck(Check):
 
     # Модули, у которых опасен ЛЮБОЙ атрибут — fail
     DANGEROUS_MODULES: dict[str, str] = {
-        # System calls
         "os": "system calls",
         "posix": "system calls",
         "nt": "system calls",
         "subprocess": "process spawn",
         "commands": "shell commands",
         "popen2": "process spawn",
-        # Code execution
         "builtins": "arbitrary eval/exec",
         "__builtin__": "arbitrary eval/exec",
         "eval": "arbitrary eval",
@@ -87,7 +91,6 @@ class PickleCheck(Check):
         "codeop": "code compilation",
         "compile": "code compilation",
         "compileall": "code compilation",
-        # Network
         "socket": "network access",
         "urllib": "network access",
         "http": "network access",
@@ -95,25 +98,21 @@ class PickleCheck(Check):
         "telnetlib": "network access",
         "smtplib": "network access",
         "requests": "network access",
-        # File system
         "shutil": "file manipulation",
         "fileinput": "file manipulation",
         "tempfile": "file manipulation",
         "pathlib": "file manipulation",
         "glob": "file manipulation",
-        # Process/terminal
         "pty": "terminal control",
         "tty": "terminal control",
         "termios": "terminal control",
         "platform": "system info",
         "sys": "interpreter internals",
         "gc": "interpreter internals",
-        # Serialization (recursive)
         "pickle": "recursive pickle",
         "dill": "recursive pickle",
         "joblib": "recursive pickle",
         "marshal": "serialization internals",
-        # Misc dangerous
         "webbrowser": "browser control",
         "ctypes": "native code",
         "cffi": "native code",
@@ -121,7 +120,6 @@ class PickleCheck(Check):
         "threading": "thread manipulation",
         "signal": "signal manipulation",
         "resource": "resource manipulation",
-        # Distutils
         "distutils": "process spawn",
     }
 
@@ -129,7 +127,8 @@ class PickleCheck(Check):
         self._emulator = OpcodeEmulator()
 
     def supports(self, file_path: Path) -> bool:
-        return file_path.suffix.lower() in self.SUPPORTED
+        name = file_path.name.lower()
+        return any(name.endswith(ext) for ext in self.SUPPORTED)
 
     def run(
         self,
@@ -139,10 +138,20 @@ class PickleCheck(Check):
         cancel_check: Callable[[], bool] | None = None,
     ) -> CheckResult:
         start = time.monotonic()
+        ctx = context or {}
+
+        max_depth = int(ctx.get("pickle_max_depth", 3))
+        budget_mb = int(ctx.get("pickle_unpack_budget_mb", 200))
+
+        walker = ContainerWalker(
+            max_depth=max_depth,
+            budget_mb=budget_mb,
+            max_stream_bytes=self.MAX_PICKLE_STREAM_BYTES,
+        )
 
         try:
-            findings = self._scan_file(file_path, cancel_check)
-        except Exception as e:
+            walk = walker.walk(file_path, cancel_check=cancel_check)
+        except Exception as e:  # noqa: BLE001
             return CheckResult(
                 status="fail",
                 message=f"Pickle scan failed: {e}",
@@ -152,44 +161,82 @@ class PickleCheck(Check):
 
         duration_ms = int((time.monotonic() - start) * 1000)
 
-        if findings is None:
-            return CheckResult(
-                status="skip",
-                message="Not a pickle file (magic bytes not recognized)",
-                duration_ms=duration_ms,
-            )
-
-        dangerous = findings.get("dangerous", [])
-        warnings = findings.get("warnings", [])
-        reduce_count = findings.get("reduce_count", 0)
-        inner_files = findings.get("inner_files", [])
-        disassembly = findings.get("disassembly", [])
-        stream_count = findings.get("stream_count", 0)
-
-        base_details = {
-            "reduce_count": reduce_count,
-            "stream_count": stream_count,
-            "inner_files": inner_files,
-            "disassembly": disassembly,
-        }
-
-        if dangerous:
-            return CheckResult(
-                status="fail",
-                message=f"Pickle safety issues: {len(dangerous)} dangerous, {len(warnings)} warnings",
-                severity="critical",
-                suggestion="⚠️ НЕ загружай файл: возможна RCE. Удали или проверь в песочнице (inspect --search)",
-                details={**base_details, "dangerous": dangerous, "warnings": warnings},
-                duration_ms=duration_ms,
-            )
-
-        if warnings:
+        if not walk.streams:
+            warnings = list(walk.warnings)
+            if not warnings:
+                warnings.append({
+                    "type": "no_pickle_stream",
+                    "message": "no pickle-like stream found in container",
+                    "pos": -1,
+                })
             return CheckResult(
                 status="warn",
-                message=f"Pickle parsed, {len(warnings)} warnings (but pickle is never fully safe)",
+                message=f"No pickle stream scanned, {len(warnings)} warnings",
+                severity="minor",
+                details={
+                    "warnings": warnings,
+                    "inner_files": walk.inner_files,
+                    "container_truncated": walk.truncated,
+                },
+                duration_ms=duration_ms,
+            )
+
+        aggregated = {
+            "dangerous": [],
+            "warnings": list(walk.warnings),
+            "reduce_count": 0,
+            "stream_count": 0,
+            "inner_files": walk.inner_files,
+            "disassembly": [],
+        }
+
+        for ref in walk.streams:
+            if cancel_check and cancel_check():
+                aggregated["warnings"].append({
+                    "type": "cancelled", "message": "scan cancelled", "pos": -1,
+                })
+                break
+            sub = self._scan_pickle_bytes(ref.data)
+            for d in sub["dangerous"]:
+                d["inner_file"] = ref.inner_path
+                aggregated["dangerous"].append(d)
+            for w in sub["warnings"]:
+                w["inner_file"] = ref.inner_path
+                aggregated["warnings"].append(w)
+            for item in sub["disassembly"]:
+                item["inner_file"] = ref.inner_path
+                aggregated["disassembly"].append(item)
+            aggregated["reduce_count"] += sub["reduce_count"]
+            aggregated["stream_count"] += sub["stream_count"]
+
+        base_details = {
+            "reduce_count": aggregated["reduce_count"],
+            "stream_count": aggregated["stream_count"],
+            "inner_files": aggregated["inner_files"],
+            "disassembly": aggregated["disassembly"],
+            "container_truncated": walk.truncated,
+        }
+
+        if aggregated["dangerous"]:
+            return CheckResult(
+                status="fail",
+                message=(
+                    f"Pickle safety issues: {len(aggregated['dangerous'])} dangerous, "
+                    f"{len(aggregated['warnings'])} warnings"
+                ),
+                severity="critical",
+                suggestion="⚠️ НЕ загружай файл: возможна RCE. Удали или проверь в песочнице (inspect --search)",
+                details={**base_details, "dangerous": aggregated["dangerous"], "warnings": aggregated["warnings"]},
+                duration_ms=duration_ms,
+            )
+
+        if aggregated["warnings"]:
+            return CheckResult(
+                status="warn",
+                message=f"Pickle parsed, {len(aggregated['warnings'])} warnings (but pickle is never fully safe)",
                 severity="minor",
                 suggestion="Проверь warnings вручную (inspect --search) — возможна обфускация",
-                details={**base_details, "warnings": warnings},
+                details={**base_details, "warnings": aggregated["warnings"]},
                 duration_ms=duration_ms,
             )
 
@@ -200,32 +247,8 @@ class PickleCheck(Check):
             duration_ms=duration_ms,
         )
 
-    # ── классификация контейнера ────────────────────────────────
-    def _scan_file(
-        self, file_path: Path, cancel_check: Callable[[], bool] | None
-    ) -> dict | None:
-        with open(file_path, "rb") as f:
-            magic = f.read(4)
-
-        if magic[:2] == b"PK":
-            return self._scan_zip(file_path, cancel_check)
-
-        if magic[:1] == bytes([self.PICKLE_MAGIC]):
-            return self._scan_pickle_file(file_path)
-
-        # FIX B1: протоколы 0/1 не имеют magic 0x80 — доверяем расширению
-        if file_path.suffix.lower() in self.SUPPORTED:
-            return self._scan_pickle_file(file_path)
-
-        return None  # не pickle — skip
-
-    def _scan_pickle_file(self, file_path: Path) -> dict:
-        with open(file_path, "rb") as f:
-            return self._scan_pickle_stream(f)
-
     # ── один поток → эмулятор → findings ────────────────────────
-    def _scan_pickle_stream(self, f) -> dict:
-        data = f.read(self.MAX_PICKLE_STREAM_BYTES + 1)
+    def _scan_pickle_bytes(self, data: bytes) -> dict:
         truncated = len(data) > self.MAX_PICKLE_STREAM_BYTES
         if truncated:
             data = data[: self.MAX_PICKLE_STREAM_BYTES]
@@ -273,7 +296,6 @@ class PickleCheck(Check):
         for err in emu.parse_errors:
             result["warnings"].append({"type": "parse_error", "message": err, "pos": -1})
 
-        # REDUCE → BUILD подряд (эвристика сохранена, до RuleEngine в Шаге 3)
         for i in range(len(emu.events) - 1):
             if emu.events[i].opcode == "REDUCE" and emu.events[i + 1].opcode == "BUILD":
                 result["warnings"].append({
@@ -291,49 +313,5 @@ class PickleCheck(Check):
         module = full.split(".")[0]
         return self.DANGEROUS_MODULES.get(module)
 
-    # ── ZIP-контейнер ──────────────────────────────────────────
-    def _scan_zip(
-        self, file_path: Path, cancel_check: Callable[[], bool] | None
-    ) -> dict:
-        result: dict[str, Any] = {
-            "dangerous": [], "warnings": [],
-            "reduce_count": 0, "stream_count": 0,
-            "inner_files": [], "disassembly": [],
-        }
 
-        with zipfile.ZipFile(file_path, "r") as zf:
-            pkl_names = [n for n in zf.namelist() if n.endswith(".pkl")]
-            result["inner_files"] = zf.namelist()[:10]
 
-            if not pkl_names:
-                result["warnings"].append({
-                    "type": "no_pickle",
-                    "message": "ZIP container, no .pkl found",
-                    "pos": -1,
-                })
-                return result
-
-            for name in pkl_names:
-                if cancel_check and cancel_check():
-                    result["warnings"].append({
-                        "type": "cancelled",
-                        "message": "scan cancelled by caller",
-                        "pos": -1,
-                    })
-                    break
-
-                with zf.open(name) as pkl_file:
-                    sub = self._scan_pickle_stream(pkl_file)
-                for d in sub["dangerous"]:
-                    d["inner_file"] = name
-                    result["dangerous"].append(d)
-                for w in sub["warnings"]:
-                    w["inner_file"] = name
-                    result["warnings"].append(w)
-                for item in sub.get("disassembly", []):
-                    item["inner_file"] = name
-                    result["disassembly"].append(item)
-                result["reduce_count"] += sub["reduce_count"]
-                result["stream_count"] += sub["stream_count"]
-
-        return result

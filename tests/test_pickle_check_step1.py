@@ -41,7 +41,7 @@ def test_clean_not_fail() -> None:
 def test_zip_inner_file_annotated() -> None:
     res = PickleCheck().run(FIX / "evil_model.pt")
     inner = {d.get("inner_file") for d in res.details["dangerous"]}
-    assert "data.pkl" in inner
+    assert any("data.pkl" in p for p in inner), inner
 
 
 def test_cancel_check_respected(tmp_path) -> None:
@@ -57,5 +57,11 @@ def test_cancel_check_respected(tmp_path) -> None:
     types = {w["type"] for w in res.details.get("warnings", [])}
     assert "cancelled" in types
 
+def test_inner_file_has_container_prefix() -> None:
+    """Шаг 2: inner_file = 'container!path' для вложенных потоков."""
+    res = PickleCheck().run(FIX / "evil_model.pt")
+    inner = {d.get("inner_file") for d in res.details["dangerous"]}
+    assert any("!" in p for p in inner), inner
+    assert any(p.endswith("data.pkl") for p in inner), inner
 
-    
+
