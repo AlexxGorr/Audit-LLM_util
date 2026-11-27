@@ -159,4 +159,58 @@ try:
 except ImportError:
     print("numpy not installed — skipping evil_object.npy fixture")
 
+# ── Шаг 3.1: контекстные правила ──────────────────────────────
+# 13. REDUCE-цепочка: STACK_GLOBAL + REDUCE (классический RCE-паттерн)
+write("stack_global_reduce.pkl", (
+    b"\x80\x04"                          # PROTO 4
+    b"\x8c\x05posix"                     # SHORT_BINUNICODE 'posix' (5)
+    b"\x8c\x06system"                    # SHORT_BINUNICODE 'system' (6)
+    b"\x93"                              # STACK_GLOBAL -> posix.system
+    b"\x8c\x0becho pwned\x00"            # SHORT_BINUNICODE 'echo pwned\x00' (11)
+    b"\x85"                              # TUPLE1
+    b"R"                                 # REDUCE
+    b"."
+))
+
+# 14. >2 REDUCE в потоке (many_reduces → major)
+write("many_reduces.pkl", (
+    b"\x80\x04"
+    b"\x8c\x08builtins" b"\x8c\x04eval" b"\x93"   # builtins.eval (hard_block)
+    b"\x8c\x011" b"\x85" b"R"                     # REDUCE #1
+    b"\x8c\x08builtins" b"\x8c\x04eval" b"\x93"
+    b"\x8c\x012" b"\x85" b"R"                     # REDUCE #2
+    b"\x8c\x08builtins" b"\x8c\x04eval" b"\x93"
+    b"\x8c\x013" b"\x85" b"R"                     # REDUCE #3
+    b"."
+))
+
+# 15. dynamic_global: STACK_GLOBAL с не-строками на стеке
+# Только dynamic_global, без hard_block: сначала кладём результат REDUCE,
+# затем пытаемся STACK_GLOBAL с ним.
+write("dynamic_global.pkl", (
+    b"\x80\x04"
+    b"\x8c\x05tuple" b"\x8c\x05tuple" b"\x93"     # tuple.tuple (не в hard, soft_major)
+    b"\x8c\x011" b"\x85" b"R"                     # REDUCE → _OBJ на стеке
+    b"\x8c\x03foo"                                # SHORT_BINUNICODE 'foo'
+    b"\x93"                                       # STACK_GLOBAL: attr='foo', module=_OBJ → dynamic_global
+    b"."
+))
+
+# 16. Легитимный импорт (soft_major, не critical) — numpy, один поток
+write("legit_import.pkl", (
+    b"\x80\x04"
+    b"\x8c\x05numpy" b"\x8c\x05array" b"\x93"     # numpy.array (soft_major)
+    b"\x8c\x011" b"\x85" b"R"
+    b"."
+))
+
+# 17. importlib.import_module (hard_block, точный)
+write("importlib_hard.pkl", (
+    b"\x80\x04"
+    b"\x8c\x09importlib" b"\x8c\x0dimport_module" b"\x93"  # importlib.import_module
+    b"\x8c\x02os" b"\x85" b"R"
+    b"."
+))
+
+
 print(f"written to {OUT}")
